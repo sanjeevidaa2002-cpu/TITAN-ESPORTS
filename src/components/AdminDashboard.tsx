@@ -61,6 +61,7 @@ import {
   ChevronRight, 
   Download, 
   Upload, 
+  Link,
   CheckCircle,
   Database,
   Lock,
@@ -142,6 +143,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
   const [localPromoCodesEnabled, setLocalPromoCodesEnabled] = useState<boolean | null>(null);
   const [isSavingPromoCodes, setIsSavingPromoCodes] = useState(false);
   const [showStoragePicker, setShowStoragePicker] = useState(false);
+  const [isFillingDb, setIsFillingDb] = useState(false);
+  const [fillProgress, setFillProgress] = useState("");
   
   // Audit Logs
   const [auditLogs, setAuditLogs] = useState<{ id: string; action: string; timestamp: string; admin: string }[]>([
@@ -1450,6 +1453,170 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
   };
 
   // Database Backup and Restore
+  const processImportedJson = async (data: any) => {
+    if (!data || typeof data !== 'object') {
+      throw new Error("Invalid JSON: Must be an object.");
+    }
+
+    let writeCount = 0;
+
+    // 1. Users
+    if (Array.isArray(data.users)) {
+      setFillProgress(`Importing ${data.users.length} users...`);
+      for (const user of data.users) {
+        if (user && user.uid) {
+          await setDoc(doc(db, 'users', user.uid), user, { merge: true });
+          writeCount++;
+        }
+      }
+    }
+
+    // 2. Tournaments
+    if (Array.isArray(data.tournaments)) {
+      setFillProgress(`Importing ${data.tournaments.length} tournaments...`);
+      for (const t of data.tournaments) {
+        if (t && t.id) {
+          await setDoc(doc(db, 'tournaments', t.id), t, { merge: true });
+          writeCount++;
+        }
+      }
+    }
+
+    // 3. Transactions
+    if (Array.isArray(data.transactions)) {
+      setFillProgress(`Importing ${data.transactions.length} transactions...`);
+      for (const txn of data.transactions) {
+        if (txn && txn.id) {
+          await setDoc(doc(db, 'transactions', txn.id), txn, { merge: true });
+          writeCount++;
+        }
+      }
+    }
+
+    // 4. Registrations
+    if (Array.isArray(data.registrations)) {
+      setFillProgress(`Importing ${data.registrations.length} registrations...`);
+      for (const reg of data.registrations) {
+        if (reg && reg.id) {
+          await setDoc(doc(db, 'registrations', reg.id), reg, { merge: true });
+          writeCount++;
+        }
+      }
+    }
+
+    // 5. Categories
+    if (Array.isArray(data.categories)) {
+      setFillProgress(`Importing ${data.categories.length} categories...`);
+      for (const cat of data.categories) {
+        if (cat && cat.id) {
+          await setDoc(doc(db, 'categories', cat.id), cat, { merge: true });
+          writeCount++;
+        }
+      }
+    }
+
+    // 6. Weekly Players
+    if (Array.isArray(data.weekly_players)) {
+      setFillProgress(`Importing ${data.weekly_players.length} weekly players...`);
+      for (const p of data.weekly_players) {
+        if (p && p.id) {
+          await setDoc(doc(db, 'weekly_players', p.id), p, { merge: true });
+          writeCount++;
+        }
+      }
+    }
+
+    // 7. Scrolling Notice
+    if (typeof data.scrollingNotice === 'string') {
+      setScrollingNotice(data.scrollingNotice);
+      await setDoc(doc(db, 'settings', 'notice'), { text: data.scrollingNotice }, { merge: true });
+      writeCount++;
+    }
+
+    // 8. Promo Codes
+    if (Array.isArray(data.promoCodes)) {
+      setPromoCodes(data.promoCodes);
+      await setDoc(doc(db, 'settings', 'promo'), { promoCodes: data.promoCodes }, { merge: true });
+      writeCount++;
+    }
+
+    // 9. App Settings
+    if (data.appSettings && typeof data.appSettings === 'object') {
+      setAppSettings(data.appSettings);
+      localStorage.setItem('titan_esp_app_settings', JSON.stringify(data.appSettings));
+      await setDoc(doc(db, 'settings', 'general'), data.appSettings, { merge: true });
+      writeCount++;
+    }
+
+    return writeCount;
+  };
+
+  const handleJsonFillLink = async () => {
+    const url = prompt("Enter public JSON Database Backup URL Link (e.g. raw GitHub URL or JSON bin):");
+    if (!url) return;
+
+    try {
+      setIsFillingDb(true);
+      setFillProgress("Fetching JSON data...");
+      
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch from URL: ${response.status} ${response.statusText}`);
+      }
+      
+      const data = await response.json();
+      setFillProgress("Processing and filling database...");
+      
+      const count = await processImportedJson(data);
+      triggerNotification(
+        "Database Filled Successfully 📥",
+        `Successfully imported ${count} records from the specified JSON link.`,
+        "system"
+      );
+      addAuditLog(`Filled database from JSON link: ${url}`);
+      alert(`Database filled successfully with ${count} records!`);
+    } catch (err: any) {
+      console.error(err);
+      alert(`Failed to fill database from link: ${err.message}`);
+    } finally {
+      setIsFillingDb(false);
+      setFillProgress("");
+    }
+  };
+
+  const handleJsonFillUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        setIsFillingDb(true);
+        setFillProgress("Parsing uploaded file...");
+        const data = JSON.parse(event.target?.result as string);
+        
+        setFillProgress("Filing database with uploaded JSON...");
+        const count = await processImportedJson(data);
+        
+        triggerNotification(
+          "Database Restored Successfully 📥",
+          `Successfully imported ${count} records from the uploaded JSON file.`,
+          "system"
+        );
+        addAuditLog("Restored database from uploaded JSON file");
+        alert(`Database restored successfully with ${count} records!`);
+      } catch (err: any) {
+        console.error(err);
+        alert(`Failed to parse/restore JSON file: ${err.message}`);
+      } finally {
+        setIsFillingDb(false);
+        setFillProgress("");
+        e.target.value = "";
+      }
+    };
+    reader.readAsText(file);
+  };
+
   const handleBackupDb = () => {
     const backupData = {
       users: dbUsers,
@@ -2062,19 +2229,49 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
               
               {/* Quick actions row */}
               <div className="flex items-center gap-2 shrink-0">
-                <button 
-                  onClick={handleClearCache}
-                  className="px-3 py-1.5 rounded-lg bg-neutral-900 border border-white/5 hover:bg-neutral-800 text-[10px] font-bold uppercase tracking-wider text-neutral-300 cursor-pointer"
-                >
-                  Clear Cache
-                </button>
-                <button 
-                  onClick={handleBackupDb}
-                  className="px-3 py-1.5 rounded-lg bg-gold-500/10 border border-gold-500/20 hover:bg-gold-500/20 text-[10px] font-bold uppercase tracking-wider text-gold-400 flex items-center gap-1.5 cursor-pointer"
-                >
-                  <Database className="w-3.5 h-3.5" />
-                  Backup DB
-                </button>
+                {isFillingDb ? (
+                  <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-blue-500/10 border border-blue-500/20 text-[10px] font-bold uppercase tracking-wider text-blue-400 animate-pulse">
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>{fillProgress || "Seeding DB..."}</span>
+                  </div>
+                ) : (
+                  <>
+                    <button 
+                      onClick={handleClearCache}
+                      className="px-3 py-1.5 rounded-lg bg-neutral-900 border border-white/5 hover:bg-neutral-800 text-[10px] font-bold uppercase tracking-wider text-neutral-300 cursor-pointer"
+                    >
+                      Clear Cache
+                    </button>
+                    
+                    <button 
+                      onClick={handleJsonFillLink}
+                      className="px-3 py-1.5 rounded-lg bg-blue-500/10 border border-blue-500/20 hover:bg-blue-500/20 text-[10px] font-bold uppercase tracking-wider text-blue-400 flex items-center gap-1.5 cursor-pointer"
+                      title="Import and seed database collections from a public JSON URL link"
+                    >
+                      <Link className="w-3.5 h-3.5" />
+                      JSON Fill Link
+                    </button>
+
+                    <label className="px-3 py-1.5 rounded-lg bg-indigo-500/10 border border-indigo-500/20 hover:bg-indigo-500/20 text-[10px] font-bold uppercase tracking-wider text-indigo-400 flex items-center gap-1.5 cursor-pointer" title="Restore database backup from a local JSON file">
+                      <Upload className="w-3.5 h-3.5" />
+                      Restore JSON
+                      <input 
+                        type="file" 
+                        accept=".json" 
+                        onChange={handleJsonFillUpload} 
+                        className="hidden" 
+                      />
+                    </label>
+
+                    <button 
+                      onClick={handleBackupDb}
+                      className="px-3 py-1.5 rounded-lg bg-gold-500/10 border border-gold-500/20 hover:bg-gold-500/20 text-[10px] font-bold uppercase tracking-wider text-gold-400 flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Database className="w-3.5 h-3.5" />
+                      Backup DB
+                    </button>
+                  </>
+                )}
               </div>
             </div>
 

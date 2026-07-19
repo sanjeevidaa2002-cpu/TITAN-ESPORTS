@@ -12,6 +12,9 @@ import { fileURLToPath } from "url";
 const currentDir = typeof __dirname !== "undefined"
   ? __dirname
   : path.dirname(fileURLToPath(import.meta.url));
+
+const isProduction = currentDir.endsWith('dist') || 
+  (fs.existsSync(path.join(currentDir, 'index.html')) && !fs.existsSync(path.join(currentDir, 'server.ts')));
 import crypto from "crypto";
 import multer from "multer";
 import { createServer as createViteServer } from "vite";
@@ -93,11 +96,11 @@ let localAppSettings: any = {
 
 async function startServer() {
   const app = express();
-  // In development, force PORT to 3000 as required by the dev server proxy.
-  // In production, fallback to process.env.PORT to support Cloud Run/production ingress routing.
-  const PORT = process.env.NODE_ENV === "production" 
-    ? (process.env.PORT || 3000) 
-    : 3000;
+  // In the development sandbox, we must bind to port 3000. 
+  // In production (Cloud Run), we must bind to process.env.PORT (typically 8080).
+  const PORT = (process.env.DEFAULT_APP_PORT === "3000")
+    ? 3000
+    : (process.env.PORT || 3000);
 
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
@@ -1924,7 +1927,7 @@ async function processTransactionSafe(orderId, isSuccess, method, amount) {
   });
 
 
-  if (process.env.NODE_ENV !== "production") {
+  if (!isProduction) {
     const vite = await createViteServer({
       server: { 
         middlewareMode: true,
