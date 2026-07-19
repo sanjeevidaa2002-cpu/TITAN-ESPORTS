@@ -11,7 +11,7 @@ import { fileURLToPath } from "url";
 // Safe cross-platform directory resolution for ESM (dev) and CJS (prod)
 const currentDir = typeof __dirname !== "undefined"
   ? __dirname
-  : path.dirname(fileURLToPath(import.meta.url));
+  : path.dirname(fileURLToPath(import.meta['url']));
 
 const isProduction = currentDir.endsWith('dist') || 
   (fs.existsSync(path.join(currentDir, 'index.html')) && !fs.existsSync(path.join(currentDir, 'server.ts')));
