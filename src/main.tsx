@@ -5,33 +5,61 @@ import './index.css';
 
 // Prevent benign HMR WebSocket errors from bubbling up and triggering unhandled rejection overlays in AI Studio
 if (typeof window !== 'undefined') {
-  const isViteWsError = (msg: string) => {
-    const lowerMsg = String(msg).toLowerCase();
-    return lowerMsg.includes('websocket') || 
-           lowerMsg.includes('without opened') ||
-           (lowerMsg.includes('vite') && lowerMsg.includes('connect'));
+  const getReasonString = (reason: any): string => {
+    if (!reason) return '';
+    if (typeof reason === 'string') return reason;
+    
+    const parts: string[] = [];
+    if (reason.message) parts.push(String(reason.message));
+    if (reason.reason) parts.push(String(reason.reason));
+    if (reason.stack) parts.push(String(reason.stack));
+    if (reason.type) parts.push(String(reason.type));
+    
+    if (reason.target) {
+      if (reason.target.url) parts.push(String(reason.target.url));
+      if (reason.target.constructor && reason.target.constructor.name) {
+        parts.push(reason.target.constructor.name);
+      }
+    }
+    
+    parts.push(String(reason));
+    
+    try {
+      parts.push(JSON.stringify(reason));
+    } catch (_) {}
+    
+    return parts.join(' ').toLowerCase();
+  };
+
+  const isViteWsError = (reason: any) => {
+    const text = getReasonString(reason);
+    return text.includes('websocket') || 
+           text.includes('without opened') ||
+           text.includes('closeevent') ||
+           text.includes('ws://') ||
+           text.includes('wss://') ||
+           (text.includes('vite') && text.includes('connect'));
   };
 
   window.addEventListener('unhandledrejection', (event) => {
-    const reasonStr = String(event.reason?.message || event.reason || '');
-    if (isViteWsError(reasonStr)) {
+    if (isViteWsError(event.reason)) {
       event.preventDefault();
       event.stopPropagation();
     }
-  });
+  }, { capture: true });
 
   window.addEventListener('error', (event) => {
-    const message = String(event.message || event.error?.message || event.error || '');
+    const message = event.error || event.message || '';
     if (isViteWsError(message)) {
       event.preventDefault();
       event.stopPropagation();
     }
-  });
+  }, { capture: true });
   
   const originalConsoleError = console.error;
   console.error = (...args: any[]) => {
-    const msg = args.join(' ');
-    if (isViteWsError(msg)) return;
+    const isBenign = args.some(arg => isViteWsError(arg));
+    if (isBenign) return;
     originalConsoleError.apply(console, args);
   };
 }
