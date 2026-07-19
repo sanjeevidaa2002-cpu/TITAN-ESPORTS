@@ -1,0 +1,6 @@
+{
+  "name": "TITAN ESP Esports",
+  "description": "Premium Free Fire Esports Tournament Platform with real-time slot tracking, secure wallets, instant withdrawals, and live battle tracking.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

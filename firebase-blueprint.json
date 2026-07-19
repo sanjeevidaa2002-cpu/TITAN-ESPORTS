@@ -1,0 +1,167 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User account and profile information, including wallet balances and stats.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "username": { "type": "string" },
+        "nickname": { "type": "string" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "profilePhoto": { "type": "string" },
+        "mobileNumber": { "type": "string" },
+        "referralCode": { "type": "string" },
+        "depositBalance": { "type": "number" },
+        "winningBalance": { "type": "number" },
+        "bonusBalance": { "type": "number" },
+        "totalEarnings": { "type": "number" },
+        "totalMatches": { "type": "number" },
+        "totalWins": { "type": "number" },
+        "totalKills": { "type": "number" },
+        "role": { "type": "string", "enum": ["user", "admin"] },
+        "accountStatus": { "type": "string", "enum": ["active", "disabled"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "lastLogin": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "username"]
+    },
+    "Tournament": {
+      "title": "Tournament",
+      "description": "Details of a tournament or match.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "gameName": { "type": "string" },
+        "entryFee": { "type": "number" },
+        "prizePool": { "type": "number" },
+        "perKillPrize": { "type": "number" },
+        "map": { "type": "string" },
+        "dateTime": { "type": "string", "format": "date-time" },
+        "roomStatus": { "type": "string" },
+        "totalSlots": { "type": "number" },
+        "joinedPlayers": { "type": "number" },
+        "enabled": { "type": "boolean" },
+        "bannerUrl": { "type": "string" }
+      },
+      "required": ["id", "title", "gameName", "entryFee"]
+    },
+    "Registration": {
+      "title": "Registration",
+      "description": "User registration record for a tournament.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "tournamentId": { "type": "string" },
+        "tournamentName": { "type": "string" },
+        "matchType": { "type": "string" },
+        "entryFee": { "type": "number" },
+        "players": { "type": "array" },
+        "status": { "type": "string" },
+        "paymentStatus": { "type": "string" },
+        "registeredAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "tournamentId", "registeredAt"]
+    },
+    "Transaction": {
+      "title": "Transaction",
+      "description": "Financial transaction record.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "amount": { "type": "number" },
+        "type": { "type": "string" },
+        "paymentMethod": { "type": "string" },
+        "referenceNo": { "type": "string" },
+        "status": { "type": "string" },
+        "dateTime": { "type": "string", "format": "date-time" },
+        "description": { "type": "string" }
+      },
+      "required": ["userId", "amount", "type", "status", "dateTime"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "App notification record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "type": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "title", "message", "createdAt"]
+    },
+    "LeaderboardEntry": {
+      "title": "LeaderboardEntry",
+      "description": "Rankings and earnings of a user.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "username": { "type": "string" },
+        "totalEarnings": { "type": "number" },
+        "rank": { "type": "number" }
+      },
+      "required": ["userId", "totalEarnings"]
+    },
+    "Winner": {
+      "title": "Winner",
+      "description": "Record of a tournament winner.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "tournamentId": { "type": "string" },
+        "tournamentName": { "type": "string" },
+        "userId": { "type": "string" },
+        "username": { "type": "string" },
+        "prizeWon": { "type": "number" },
+        "date": { "type": "string", "format": "date" }
+      },
+      "required": ["id", "userId", "prizeWon"]
+    },
+    "Banner": {
+      "title": "Banner",
+      "description": "Promotional banner record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "imageUrl": { "type": "string" },
+        "link": { "type": "string" },
+        "active": { "type": "boolean" }
+      },
+      "required": ["id", "imageUrl", "active"]
+    },
+    "AppSettings": {
+      "title": "AppSettings",
+      "description": "Global settings for the application.",
+      "type": "object",
+      "properties": {
+        "maintenanceMode": { "type": "boolean" },
+        "appName": { "type": "string" }
+      }
+    }
+  },
+  "firestore": {
+    "/users/{userId}": { "schema": "User", "description": "User documents." },
+    "/tournaments/{tournamentId}": { "schema": "Tournament", "description": "Tournament matches." },
+    "/registrations/{registrationId}": { "schema": "Registration", "description": "Match registrations." },
+    "/transactions/{transactionId}": { "schema": "Transaction", "description": "Financial logs." },
+    "/notifications/{notificationId}": { "schema": "Notification", "description": "User notifications." },
+    "/leaderboard/{userId}": { "schema": "LeaderboardEntry", "description": "Global rankings." },
+    "/winners/{winnerId}": { "schema": "Winner", "description": "Past winners." },
+    "/homepage_banners/{bannerId}": { "schema": "Banner", "description": "Home banners." },
+    "/settings/{settingId}": { "schema": "AppSettings", "description": "General settings." },
+    "/appSettings/{settingId}": { "schema": "AppSettings", "description": "More settings." },
+    "/loading_settings/{id}": { "schema": "object", "description": "Loading screen." },
+    "/support_settings/{id}": { "schema": "object", "description": "Support settings." },
+    "/contact_widget_settings/{id}": { "schema": "object", "description": "Contact widget." },
+    "/categories/{id}": { "schema": "object", "description": "Game categories." },
+    "/weekly_players/{id}": { "schema": "object", "description": "Weekly rankings." },
+    "/storage_files/{id}": { "schema": "object", "description": "Media assets tracking." }
+  }
+}

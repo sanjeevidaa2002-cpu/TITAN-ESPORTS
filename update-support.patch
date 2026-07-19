@@ -1,0 +1,47 @@
+--- src/components/Support.tsx
++++ src/components/Support.tsx
+@@ -8,7 +8,6 @@
+ import { useGame } from '../context/GameContext';
+ import { Mail, MessageSquare, Send, PhoneCall, HelpCircle, ArrowLeft, Check, Compass } from 'lucide-react';
+-import { ChatBox } from './ChatBox';
+ 
+ interface SupportProps {
+   onBack: () => void;
+@@ -159,7 +158,35 @@
+ 
+         {/* Right Column: Interactive Support Chat */}
+         <div className="lg:col-span-6">
+-          <ChatBox isFloating={false} />
++          <div className="bg-[#111116] border border-white/5 rounded-3xl p-6 sm:p-8 flex flex-col h-[600px]">
++            <div className="mb-6">
++              <h2 className="text-xl font-black text-white uppercase tracking-wider font-display">Premium Support</h2>
++              <p className="text-xs text-neutral-400 mt-1 font-sans">Reach out directly via our official channels.</p>
++            </div>
++            
++            <div className="space-y-4 flex-1">
++              {supportSettings?.whatsappStatus && supportSettings.whatsappLink && (
++                <a href={supportSettings.whatsappLink} target="_blank" rel="noopener noreferrer" className="flex items-center gap-4 p-6 rounded-2xl bg-gradient-to-r from-[#25D366]/10 to-transparent hover:from-[#25D366]/20 border border-[#25D366]/20 hover:border-[#25D366]/50 transition-all group">
++                  <div className="w-14 h-14 rounded-full bg-[#25D366] flex items-center justify-center shadow-[0_0_20px_rgba(37,211,102,0.4)] group-hover:scale-110 transition-transform">
++                    <MessageSquare className="w-6 h-6 text-white" />
++                  </div>
++                  <div>
++                    <h4 className="text-white font-black text-lg uppercase tracking-wider">WhatsApp</h4>
++                    <p className="text-xs text-[#25D366]">Fastest Response</p>
++                  </div>
++                </a>
++              )}
++              {supportSettings?.telegramStatus && supportSettings.telegramLink && (
++                <a href={supportSettings.telegramLink} target="_blank" rel="noopener noreferrer" className="flex items-center gap-4 p-6 rounded-2xl bg-gradient-to-r from-[#0088cc]/10 to-transparent hover:from-[#0088cc]/20 border border-[#0088cc]/20 hover:border-[#0088cc]/50 transition-all group">
++                  <div className="w-14 h-14 rounded-full bg-[#0088cc] flex items-center justify-center shadow-[0_0_20px_rgba(0,136,204,0.4)] group-hover:scale-110 transition-transform">
++                    <Send className="w-6 h-6 text-white -ml-1" />
++                  </div>
++                  <div>
++                    <h4 className="text-white font-black text-lg uppercase tracking-wider">Telegram</h4>
++                    <p className="text-xs text-[#0088cc]">Join our Community</p>
++                  </div>
++                </a>
++              )}
++            </div>
++          </div>
+         </div>
+       </div>

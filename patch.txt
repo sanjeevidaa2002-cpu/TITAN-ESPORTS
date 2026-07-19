@@ -1,0 +1,12 @@
+          <div className="flex flex-wrap items-center justify-center gap-2 font-extrabold tracking-widest text-3xl md:text-4xl drop-shadow-[0_2px_10px_rgba(229,169,25,0.2)] mb-1.5 uppercase font-sans">
+            <span style={{ color: brandingSettings?.splashMainTitleColor || '#e5a919' }}>
+              {mainTitle}
+            </span>
+          </div>
+          
+          <p 
+            className="text-xs tracking-[0.25em] font-semibold uppercase mt-1"
+            style={{ color: brandingSettings?.splashSubtitleColor || '#a855f7' }}
+          >
+            {secondaryTitle}
+          </p>
