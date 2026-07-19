@@ -6,6 +6,12 @@
 import fs from "fs";
 import express from "express";
 import path from "path";
+import { fileURLToPath } from "url";
+
+// Safe cross-platform directory resolution for ESM (dev) and CJS (prod)
+const currentDir = typeof __dirname !== "undefined"
+  ? __dirname
+  : path.dirname(fileURLToPath(import.meta.url));
 import crypto from "crypto";
 import multer from "multer";
 import { createServer as createViteServer } from "vite";
@@ -87,7 +93,11 @@ let localAppSettings: any = {
 
 async function startServer() {
   const app = express();
-  const PORT = process.env.PORT || 3000;
+  // In development, force PORT to 3000 as required by the dev server proxy.
+  // In production, fallback to process.env.PORT to support Cloud Run/production ingress routing.
+  const PORT = process.env.NODE_ENV === "production" 
+    ? (process.env.PORT || 3000) 
+    : 3000;
 
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
@@ -1925,9 +1935,9 @@ async function processTransactionSafe(orderId, isSuccess, method, amount) {
 
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), 'dist');
+    const distPath = currentDir;
     app.use(express.static(distPath));
-    app.use(express.static(path.join(process.cwd(), 'public')));
+    app.use(express.static(path.join(currentDir, '..', 'public')));
     app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
