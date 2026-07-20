@@ -65,6 +65,19 @@ const db = initializeFirestore(fbApp, {
   ignoreUndefinedProperties: true,
 }, dbId);
 
+async function verifyAdminRole(userUid: string): Promise<boolean> {
+  if (!userUid) return false;
+  try {
+    const userSnap = await getDoc(doc(db, "users", userUid));
+    if (userSnap.exists()) {
+      return userSnap.data()?.role === "admin";
+    }
+  } catch (e) {
+    console.error("Error verifying admin role:", e);
+  }
+  return false;
+}
+
 // Local memory fallback store in case Firestore Admin SDK hits PERMISSION_DENIED or other service-level access limitations.
 // This guarantees that the YouTube tab configurations will still save, synchronize, and function fully in-memory if the backend Firestore client is blocked.
 let localYouTubeConfig: any = {
@@ -1679,7 +1692,11 @@ async function processTransactionSafe(orderId, isSuccess, method, amount) {
   // ==========================================
     app.post("/api/admin/payments/complete", async (req, res) => {
     try {
-      const { transactionId, admin } = req.body;
+      const { transactionId, admin, userUid } = req.body;
+      const isAdmin = await verifyAdminRole(userUid);
+      if (!isAdmin) {
+        return res.status(403).json({ success: false, message: "Unauthorized: Access is restricted to Admin users only." });
+      }
       if (!transactionId) {
         return res.status(400).json({ success: false, message: "Transaction ID is required." });
       }
@@ -1836,7 +1853,11 @@ async function processTransactionSafe(orderId, isSuccess, method, amount) {
   // Old code backup boundary (delete everything until app.post("/api/admin/payments/cancel")
   app.post("/api/admin/payments/cancel", async (req, res) => {
     try {
-      const { transactionId, reason, admin } = req.body;
+      const { transactionId, reason, admin, userUid } = req.body;
+      const isAdmin = await verifyAdminRole(userUid);
+      if (!isAdmin) {
+        return res.status(403).json({ success: false, message: "Unauthorized: Access is restricted to Admin users only." });
+      }
       if (!transactionId) {
         return res.status(400).json({ success: false, message: "Transaction ID is required." });
       }
@@ -1948,6 +1969,87 @@ async function processTransactionSafe(orderId, isSuccess, method, amount) {
     } catch (error) {
       console.error("An error occurred");
       res.status(500).json({ success: false, message: error.message });
+    }
+  });
+
+
+  // API: Verify Admin Credentials (2FA Verification)
+  app.post('/api/admin/verify-credentials', async (req, res) => {
+    try {
+      const { adminId, password, userUid } = req.body;
+
+      if (!adminId || !password) {
+        return res.status(400).json({ success: false, message: "Admin ID and Password are required." });
+      }
+
+      // Check role of requesting user if userUid is provided
+      if (userUid) {
+        try {
+          const userSnap = await getDoc(doc(db, 'users', userUid));
+          if (userSnap.exists() && userSnap.data()?.role !== 'admin') {
+            return res.status(403).json({ success: false, message: "Unauthorized: Access is restricted to Admin users only." });
+          }
+        } catch (e) {
+          console.warn("User role verification error:", e);
+        }
+      }
+
+      // 1. Fetch credentials document from Firestore database
+      const credsDocRef = doc(db, 'settings', 'admin_credentials');
+      let credsSnap = await getDoc(credsDocRef);
+
+      // If missing, initialize it in the database with hashed default credentials
+      if (!credsSnap.exists()) {
+        const defaultPassword = 'TitanAdmin2026';
+        const defaultHash = crypto.createHash('sha256').update(defaultPassword).digest('hex');
+        const defaultCreds = {
+          adminId: 'admin',
+          altAdminId: 'admin@titanesp.com',
+          passwordHash: defaultHash,
+          updatedAt: new Date().toISOString()
+        };
+        await setDoc(credsDocRef, defaultCreds);
+        credsSnap = await getDoc(credsDocRef);
+      }
+
+      const credsData = credsSnap.data();
+      const enteredHash = crypto.createHash('sha256').update(password).digest('hex');
+
+      const matchId = adminId.trim().toLowerCase() === credsData?.adminId?.toLowerCase() || 
+                      adminId.trim().toLowerCase() === credsData?.altAdminId?.toLowerCase();
+      const matchPassword = enteredHash === credsData?.passwordHash;
+
+      if (matchId && matchPassword) {
+        // Log successful verification
+        try {
+          await addDoc(collection(db, 'admin_access_logs'), {
+            adminId: adminId.trim(),
+            action: '2FA Verification Successful',
+            timestamp: new Date().toISOString(),
+            status: 'success',
+            userUid: userUid || 'unknown'
+          });
+        } catch (logErr) {}
+
+        return res.json({ success: true, message: "Verification successful!" });
+      } else {
+        // Log failed verification attempt
+        try {
+          await addDoc(collection(db, 'admin_failed_attempts'), {
+            adminId: adminId.trim(),
+            attemptedPasswordHash: enteredHash,
+            timestamp: new Date().toISOString(),
+            status: 'failed',
+            userUid: userUid || 'unknown',
+            ip: req.ip || req.headers['x-forwarded-for'] || 'unknown'
+          });
+        } catch (logErr) {}
+
+        return res.status(401).json({ success: false, message: "Invalid Admin ID or Password." });
+      }
+    } catch (err: any) {
+      console.error("Credentials verification error:", err);
+      res.status(500).json({ success: false, message: "Internal server error: " + err.message });
     }
   });
 

@@ -6,6 +6,7 @@ import {
  */
 
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useGame } from '../context/GameContext';
 import { db, storage } from '../firebase';
 import { uploadFileWithFallback } from '../utils/uploadHelper';
@@ -100,6 +101,7 @@ import { AdminCategoriesTab } from './AdminCategoriesTab';
 import { AdminWeeklyLeaderboardTab as WeeklyTopPlayersManager } from './AdminWeeklyLeaderboardTab';
 import { AdminWinningsManager } from './AdminWinningsManager';
 import { AdminAuthProvidersTab } from './AdminAuthProvidersTab';
+import { AdminVerificationModal } from './AdminVerificationModal';
 import { compressImage } from '../utils/imageUtils';
 
 interface AdminDashboardProps {
@@ -107,6 +109,7 @@ interface AdminDashboardProps {
 }
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
+  const navigate = useNavigate();
   const { 
     tournaments, 
     userProfile, 
@@ -120,16 +123,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     notificationSettings,
     updateNotificationSettingsAdmin,
     promoSettings,
-    updatePromoSettingsAdmin
+    updatePromoSettingsAdmin,
+    currentUser,
+    loading
   } = useGame();
   
   // Admin Login States
-  const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
+  const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(() => {
+    return sessionStorage.getItem('admin_logged_in') === 'true';
+  });
   const [adminUsername, setAdminUsername] = useState('');
   const [adminPassword, setAdminPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [showRoomPassword, setShowRoomPassword] = useState(false);
   const [loginError, setLoginError] = useState('');
+  const [showAuth2FaModal, setShowAuth2FaModal] = useState(false);
 
   // States
   const [sidebarCollapsed, setSidebarCollapsed] = useState(window.innerWidth < 1200);
@@ -230,9 +238,42 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
   const [loadingYt, setLoadingYt] = useState(false);
   const [ytTestStatus, setYtTestStatus] = useState<{ success?: boolean; message?: string } | null>(null);
 
+  const handleExitConsole = () => {
+    sessionStorage.removeItem('admin_logged_in');
+    sessionStorage.removeItem('admin_2fa_verified');
+    setIsAdminLoggedIn(false);
+    onBack();
+  };
+
   useEffect(() => {
     if (activeTab === 'youtube_management') {
       loadYtAdminData();
+    }
+  }, [activeTab]);
+
+  // Auto-login and sub-routing if second-factor is verified and role is admin
+  useEffect(() => {
+    const is2FaVerified = sessionStorage.getItem('admin_2fa_verified') === 'true';
+    if (userProfile?.role === 'admin' && is2FaVerified) {
+      setIsAdminLoggedIn(true);
+      
+      const autoTab = sessionStorage.getItem('admin_auto_tab');
+      if (autoTab) {
+        setActiveTab(autoTab as any);
+        sessionStorage.removeItem('admin_auto_tab');
+      }
+    }
+  }, [userProfile]);
+
+  // Guard the auth_providers tab
+  useEffect(() => {
+    if (activeTab === 'auth_providers') {
+      const isVerified = sessionStorage.getItem('admin_2fa_verified') === 'true';
+      if (!isVerified) {
+        setShowAuth2FaModal(true);
+      }
+    } else {
+      setShowAuth2FaModal(false);
     }
   }, [activeTab]);
 
@@ -1257,7 +1298,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       const res = await fetch('/api/admin/payments/complete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ transactionId: txn.id, admin: userProfile?.email || 'admin@titanesp.com' })
+        body: JSON.stringify({ transactionId: txn.id, admin: userProfile?.email || 'admin@titanesp.com', userUid: userProfile?.uid })
       });
       const data = await res.json();
       if (res.ok) {
@@ -1281,7 +1322,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
         const res = await fetch('/api/admin/payments/cancel', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ transactionId: txn.id, reason, admin: userProfile?.email || 'admin@titanesp.com' })
+          body: JSON.stringify({ transactionId: txn.id, reason, admin: userProfile?.email || 'admin@titanesp.com', userUid: userProfile?.uid })
         });
         const data = await res.json();
         if (res.ok) {
@@ -1671,12 +1712,59 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       (cleanPassword === 'admin' || cleanPassword === 'admin123' || cleanPassword === 'TitanAdmin2026')
     ) {
       setIsAdminLoggedIn(true);
+      sessionStorage.setItem('admin_logged_in', 'true');
       setLoginError('');
       triggerNotification("Admin Login Successful 🔐", "Authorized access granted to TITAN ESP control panel.", "system");
     } else {
       setLoginError("Access Denied: Invalid Administrative Credentials.");
     }
   };
+
+  // Guard: Loading state
+  if (loading) {
+    return (
+      <div className="fixed inset-0 bg-[#08080c] flex items-center justify-center z-50">
+        <div className="relative flex flex-col items-center">
+          <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-gold-500 mb-4"></div>
+          <span className="text-xs uppercase tracking-widest text-neutral-400 font-mono">Verifying Access...</span>
+        </div>
+      </div>
+    );
+  }
+
+  // Guard: Unauthorized state
+  if (currentUser && userProfile && userProfile.role !== 'admin') {
+    return (
+      <div className="fixed inset-0 bg-[#06060a] bg-[radial-gradient(ellipse_at_top,rgba(239,68,68,0.08),transparent_50%)] text-neutral-200 z-50 flex items-center justify-center p-4 font-sans select-none">
+        <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.01)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.01)_1px,transparent_1px)] bg-[size:40px_40px] pointer-events-none opacity-20" />
+        
+        <div className="w-full max-w-md bg-[#0d0d15]/95 border border-red-500/20 rounded-2xl shadow-[0_0_50px_rgba(0,0,0,0.8),0_0_30px_rgba(239,68,68,0.05)] overflow-hidden relative backdrop-blur-md">
+          {/* Accent Red Top Bar */}
+          <div className="h-1 bg-gradient-to-r from-red-600 via-rose-500 to-red-600 w-full" />
+          
+          <div className="p-8 text-center flex flex-col items-center">
+            <div className="w-16 h-16 rounded-full bg-red-500/10 flex items-center justify-center border border-red-500/30 shadow-[0_0_20px_rgba(239,68,68,0.15)] mb-6 animate-pulse">
+              <ShieldAlert className="w-8 h-8 text-red-500" />
+            </div>
+            
+            <h2 className="text-xl font-black tracking-widest text-red-500 uppercase">ACCESS DENIED</h2>
+            <p className="text-[10px] text-neutral-400 font-mono mt-1.5 uppercase tracking-wider mb-6">Secured Administrative Area</p>
+            
+            <div className="bg-red-500/5 border border-red-500/10 rounded-xl p-4 mb-8 text-xs text-neutral-400 leading-relaxed max-w-sm">
+              Your account (<span className="text-white font-mono">{userProfile?.email || userProfile?.nickname}</span>) does not possess the <span className="text-red-400 font-bold">Admin</span> role required to access the management panel. This unauthorized attempt has been blocked.
+            </div>
+
+            <button
+              onClick={() => navigate('/')}
+              className="w-full py-3.5 bg-gradient-to-r from-red-600 to-rose-500 text-white font-black text-xs uppercase tracking-widest rounded-xl shadow-[0_0_20px_rgba(239,68,68,0.2)] hover:shadow-[0_0_30px_rgba(239,68,68,0.4)] transition-all active:scale-[0.98] cursor-pointer flex items-center justify-center gap-2"
+            >
+              <span>Return to Arena</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (!isAdminLoggedIn) {
     return (
@@ -1798,7 +1886,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
         <div className="p-4 border-b border-white/5 flex flex-col items-center gap-3 relative">
           <div className="absolute right-4 top-4 flex items-center gap-1.5">
             <button 
-              onClick={onBack}
+              onClick={handleExitConsole}
               className="px-2 py-1.5 flex justify-center items-center rounded bg-white/5 text-[9px] uppercase font-bold text-neutral-400 hover:text-white border border-white/5 cursor-pointer"
               title="Exit Console"
             >
@@ -5330,6 +5418,22 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
         {/* VIEW: AUTHENTICATION PROVIDERS */}
         {activeTab === 'auth_providers' && (
           <AdminAuthProvidersTab />
+        )}
+
+        {showAuth2FaModal && (
+          <AdminVerificationModal 
+            isOpen={showAuth2FaModal}
+            onClose={() => {
+              setShowAuth2FaModal(false);
+              const isVerified = sessionStorage.getItem('admin_2fa_verified') === 'true';
+              if (!isVerified) {
+                setActiveTab('overview');
+              }
+            }}
+            onSuccess={() => {
+              setShowAuth2FaModal(false);
+            }}
+          />
         )}
 
         </div>

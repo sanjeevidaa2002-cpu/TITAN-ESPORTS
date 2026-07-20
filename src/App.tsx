@@ -43,6 +43,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 
 function DashboardContent() {
+  const navigate = useNavigate();
   const { currentUser, userProfile, tournaments, logout, notifications, brandingSettings, notificationSettings } = useGame();
   
   const [showSplash, setShowSplash] = useState(true);
@@ -80,7 +81,8 @@ function DashboardContent() {
     { id: 'leaderboard', label: 'Leaderboard', icon: Trophy, onClick: () => setActiveTab('leaderboard') },
     { id: 'referral', label: 'Referral', icon: Gift, onClick: () => setActiveTab('referral') },
     { id: 'support', label: 'Live', icon: HelpCircle, onClick: () => setActiveTab('support') },
-        { id: 'logout', label: 'Logout', icon: LogOut, onClick: logout },
+    ...(userProfile?.role === 'admin' ? [{ id: 'admin', label: '🛡️ Admin', icon: Shield, onClick: () => navigate('/admin') }] : []),
+    { id: 'logout', label: 'Logout', icon: LogOut, onClick: logout },
   ];
 
   // Active push toast alerts
@@ -199,7 +201,6 @@ function DashboardContent() {
     }
   };
 
-  const navigate = useNavigate();
   useEffect(() => {
     if (currentUser) {
       const path = window.location.pathname;
@@ -502,6 +503,17 @@ function DashboardContent() {
               <User className="w-5 h-5 stroke-[2]" />
               <span className="text-[10px] font-bold uppercase tracking-wider">Profile</span>
             </button>
+
+            {/* Admin (Only for Admin Role) */}
+            {userProfile?.role === 'admin' && (
+              <button 
+                onClick={() => navigate('/admin')}
+                className="bottom-nav-item flex-1 h-full flex flex-col items-center justify-center space-y-1 transition-all cursor-pointer text-neutral-500 hover:text-white"
+              >
+                <Shield className="w-5 h-5 stroke-[2]" />
+                <span className="text-[10px] font-bold uppercase tracking-wider">Admin</span>
+              </button>
+            )}
 
           </div>
         </nav>

@@ -6,6 +6,7 @@
 import React, { useState } from 'react';
 import { useGame } from '../context/GameContext';
 import { WinningsPage } from './WinningsPage';
+import { AdminVerificationModal } from './AdminVerificationModal';
 import { 
   User, 
   Mail, 
@@ -34,6 +35,7 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({ onSwitchTab }) => {
   const { userProfile, updateProfile, logout, notificationSettings } = useGame();
   
   const [activeSubTab, setActiveSubTab] = useState<'main' | 'winnings'>('main');
+  const [showVerifyModal, setShowVerifyModal] = useState(false);
 
   // Toggle switches
   const [pushEnabled, setPushEnabled] = useState(userProfile?.isNotificationEnabled ?? true);
@@ -236,6 +238,25 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({ onSwitchTab }) => {
           {/* Navigation list items */}
           <div className="bg-[#111116] border border-white/5 rounded-2xl divide-y divide-white/5 overflow-hidden shadow-lg">
             
+            {/* Admin Access (ONLY FOR ADMIN ROLE) */}
+            {userProfile?.role === 'admin' && (
+              <div 
+                onClick={() => setShowVerifyModal(true)}
+                className="p-4 flex items-center justify-between hover:bg-gold-500/10 bg-gold-500/5 border-l-2 border-gold-500 transition-all cursor-pointer"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-gold-500/20 text-gold-400 flex items-center justify-center border border-gold-500/30">
+                    <Shield className="w-4.5 h-4.5" />
+                  </div>
+                  <div className="flex flex-col">
+                    <span className="text-xs font-black text-gold-400 uppercase tracking-widest">🛡️ Admin Access</span>
+                    <span className="text-[9px] text-neutral-400 font-mono">Verify 2FA to access security settings</span>
+                  </div>
+                </div>
+                <ChevronRight className="w-4 h-4 text-gold-500" />
+              </div>
+            )}
+
             {/* Wallet Activator */}
             <div 
               onClick={() => onSwitchTab('wallet')}
@@ -505,6 +526,18 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({ onSwitchTab }) => {
             </form>
           </div>
         </div>
+      )}
+
+      {/* Admin Verification Modal */}
+      {showVerifyModal && (
+        <AdminVerificationModal 
+          isOpen={showVerifyModal}
+          onClose={() => setShowVerifyModal(false)}
+          onSuccess={() => {
+            sessionStorage.setItem('admin_auto_tab', 'auth_providers');
+            window.location.href = '/admin';
+          }}
+        />
       )}
     </div>
   );
