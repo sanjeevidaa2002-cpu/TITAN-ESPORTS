@@ -81,13 +81,34 @@ async function verifyAdminRole(userUid: string): Promise<boolean> {
 // Local memory fallback store in case Firestore Admin SDK hits PERMISSION_DENIED or other service-level access limitations.
 // This guarantees that the YouTube tab configurations will still save, synchronize, and function fully in-memory if the backend Firestore client is blocked.
 let localYouTubeConfig: any = {
-  enabled: false,
-  apiKey: "",
-  channelId: "",
+  enabled: true,
+  apiKey: "AIzaSyDnjQ1CT7epD61l5dgzGqMxeXAWDUG-dhw",
+  channelId: "UCjqzz1wYC3zdpLEHVxjcTEQ",
   cacheDurationMinutes: 15,
   autoSync: true,
   updatedAt: new Date().toISOString()
 };
+
+// Bootstrap YouTube config to Firestore if DB is available
+async function bootstrapYouTubeConfig() {
+  try {
+    if (db) {
+      const docRef = doc(db, "appSettings", "youtube");
+      await setDoc(docRef, {
+        enabled: true,
+        apiKey: "AIzaSyDnjQ1CT7epD61l5dgzGqMxeXAWDUG-dhw",
+        channelId: "UCjqzz1wYC3zdpLEHVxjcTEQ",
+        cacheDurationMinutes: 15,
+        autoSync: true,
+        updatedAt: new Date().toISOString()
+      });
+      console.log("YouTube Config bootstrapped successfully to Firestore!");
+    }
+  } catch (err: any) {
+    console.warn("Could not bootstrap YouTube config to remote Firestore. Using local fallback. Error:", err?.message || err);
+  }
+}
+bootstrapYouTubeConfig();
 
 let localAppSettings: any = {
   appName: 'TITAN ESP',
