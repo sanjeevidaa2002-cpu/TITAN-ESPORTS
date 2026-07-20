@@ -86,6 +86,10 @@ export const preloadYouTubeData = async () => {
   try {
     const configRes = await fetch('/api/youtube/config');
     if (!configRes.ok) return;
+
+    const configContentType = configRes.headers.get("content-type") || "";
+    if (!configContentType.includes("application/json")) return;
+
     const configData = await configRes.json();
     
     if (!configData.enabled || !configData.hasApiKey || !configData.channelId) {
@@ -100,10 +104,23 @@ export const preloadYouTubeData = async () => {
       fetch('/api/youtube/live')
     ]);
 
-    const newChannel = channelRes.ok ? await channelRes.json() : null;
-    const newVideos = videosRes.ok ? await videosRes.json() : [];
-    const newShorts = shortsRes.ok ? await shortsRes.json() : [];
-    const newLive = liveRes.ok ? await liveRes.json() : null;
+    let newChannel = null;
+    let newVideos = [];
+    let newShorts = [];
+    let newLive = null;
+
+    if (channelRes.ok && (channelRes.headers.get("content-type") || "").includes("application/json")) {
+      try { newChannel = await channelRes.json(); } catch (_) {}
+    }
+    if (videosRes.ok && (videosRes.headers.get("content-type") || "").includes("application/json")) {
+      try { newVideos = await videosRes.json(); } catch (_) {}
+    }
+    if (shortsRes.ok && (shortsRes.headers.get("content-type") || "").includes("application/json")) {
+      try { newShorts = await shortsRes.json(); } catch (_) {}
+    }
+    if (liveRes.ok && (liveRes.headers.get("content-type") || "").includes("application/json")) {
+      try { newLive = await liveRes.json(); } catch (_) {}
+    }
 
     localStorage.setItem(YT_CACHE_KEY, JSON.stringify({
       config: configData,
@@ -115,7 +132,7 @@ export const preloadYouTubeData = async () => {
     
     lastYtFetch = Date.now();
   } catch (err) {
-    console.warn("Error preloading YouTube metadata:");
+    console.warn("Error preloading YouTube metadata:", err);
   } finally {
     isFetchingYT = false;
   }
@@ -178,8 +195,13 @@ export const YouTubeTab: React.FC = () => {
     try {
       const configRes = await fetch('/api/youtube/config');
       if (!configRes.ok) throw new Error("Failed to load YouTube setup configuration");
-      const configData = await configRes.json();
       
+      const configContentType = configRes.headers.get("content-type") || "";
+      if (!configContentType.includes("application/json")) {
+        throw new Error("Unable to connect to the YouTube integration center. Please configure valid API credentials in the Admin Panel.");
+      }
+
+      const configData = await configRes.json();
       setConfig(configData);
 
       if (!configData.enabled || !configData.hasApiKey || !configData.channelId) {
@@ -195,14 +217,27 @@ export const YouTubeTab: React.FC = () => {
         fetch('/api/youtube/live')
       ]);
 
-      const newChannel = channelRes.ok ? await channelRes.json() : null;
-      const newVideos = videosRes.ok ? await videosRes.json() : [];
-      const newShorts = shortsRes.ok ? await shortsRes.json() : [];
-      const newLive = liveRes.ok ? await liveRes.json() : null;
+      let newChannel = null;
+      let newVideos = [];
+      let newShorts = [];
+      let newLive = null;
+
+      if (channelRes.ok && (channelRes.headers.get("content-type") || "").includes("application/json")) {
+        try { newChannel = await channelRes.json(); } catch (_) {}
+      }
+      if (videosRes.ok && (videosRes.headers.get("content-type") || "").includes("application/json")) {
+        try { newVideos = await videosRes.json(); } catch (_) {}
+      }
+      if (shortsRes.ok && (shortsRes.headers.get("content-type") || "").includes("application/json")) {
+        try { newShorts = await shortsRes.json(); } catch (_) {}
+      }
+      if (liveRes.ok && (liveRes.headers.get("content-type") || "").includes("application/json")) {
+        try { newLive = await liveRes.json(); } catch (_) {}
+      }
 
       if (newChannel) setChannel(newChannel);
-      if (newVideos) setVideos(newVideos);
-      if (newShorts) setShorts(newShorts);
+      if (newVideos && newVideos.length > 0) setVideos(newVideos);
+      if (newShorts && newShorts.length > 0) setShorts(newShorts);
       if (newLive) setLiveData(newLive);
 
       localStorage.setItem(YT_CACHE_KEY, JSON.stringify({

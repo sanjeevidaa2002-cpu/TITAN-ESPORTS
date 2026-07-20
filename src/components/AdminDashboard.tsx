@@ -282,6 +282,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     try {
       const configRes = await fetch('/api/youtube/config');
       if (configRes.ok) {
+        const contentType = configRes.headers.get("content-type") || "";
+        if (!contentType.includes("application/json")) {
+          throw new Error("Invalid YouTube configuration format from server.");
+        }
         const configData = await configRes.json();
         setYtConfig({
           enabled: configData.enabled || false,
@@ -294,23 +298,35 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
         if (configData.enabled && configData.channelId) {
           // Fetch channel info
           const channelRes = await fetch('/api/youtube/channel');
-          if (channelRes.ok) {
-            setYtChannelInfo(await channelRes.json());
+          if (channelRes.ok && (channelRes.headers.get("content-type") || "").includes("application/json")) {
+            try {
+              setYtChannelInfo(await channelRes.json());
+            } catch (_) {}
           }
           // Fetch live status
           const liveRes = await fetch('/api/youtube/live');
-          if (liveRes.ok) {
-            setYtLiveInfo(await liveRes.json());
+          if (liveRes.ok && (liveRes.headers.get("content-type") || "").includes("application/json")) {
+            try {
+              setYtLiveInfo(await liveRes.json());
+            } catch (_) {}
           }
           // Fetch videos & shorts
           const videosRes = await fetch('/api/youtube/videos');
           const shortsRes = await fetch('/api/youtube/shorts');
-          if (videosRes.ok) setYtVideos(await videosRes.json());
-          if (shortsRes.ok) setYtShorts(await shortsRes.json());
+          if (videosRes.ok && (videosRes.headers.get("content-type") || "").includes("application/json")) {
+            try {
+              setYtVideos(await videosRes.json());
+            } catch (_) {}
+          }
+          if (shortsRes.ok && (shortsRes.headers.get("content-type") || "").includes("application/json")) {
+            try {
+              setYtShorts(await shortsRes.json());
+            } catch (_) {}
+          }
         }
       }
     } catch (err) {
-      console.warn("Error loading YT Admin data:");
+      console.warn("Error loading YT Admin data:", err);
     } finally {
       setLoadingYt(false);
     }
@@ -326,6 +342,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(ytConfig)
       });
+      
+      const contentType = res.headers.get("content-type") || "";
+      if (!contentType.includes("application/json")) {
+        throw new Error("Server returned an invalid non-JSON response. Please check if the backend is running properly.");
+      }
+
       const data = await res.json();
       if (res.ok) {
         alert(data.message || "YouTube configuration saved successfully!");
@@ -352,12 +374,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       
       if (!saveRes.ok) {
         let errMsg = "Failed to save credentials before testing connection";
-        try {
-          const errData = await saveRes.json();
-          if (errData && (errData.error || errData.message)) {
-            errMsg = errData.error || errData.message;
-          }
-        } catch (_) {}
+        const saveContentType = saveRes.headers.get("content-type") || "";
+        if (saveContentType.includes("application/json")) {
+          try {
+            const errData = await saveRes.json();
+            if (errData && (errData.error || errData.message)) {
+              errMsg = errData.error || errData.message;
+            }
+          } catch (_) {}
+        } else {
+          errMsg += ` (Status ${saveRes.status})`;
+        }
         throw new Error(errMsg);
       }
 
@@ -365,12 +392,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       await fetch('/api/youtube/sync', { method: 'POST' });
 
       const channelRes = await fetch('/api/youtube/channel');
+      const channelContentType = channelRes.headers.get("content-type") || "";
+      
+      if (!channelContentType.includes("application/json")) {
+        throw new Error("Received an invalid response format from YouTube Channel API. Please ensure your API credentials are correct and the channel is active.");
+      }
+
       const channelData = await channelRes.json();
 
       if (channelRes.ok && channelData.id) {
         setYtTestStatus({
           success: true,
-          message: `Successfully connected to channel: ${channelData.title}!`
+          message: `Successfully connected to channel: ${channelData.title || 'Connected'}!`
         });
         setYtChannelInfo(channelData);
         loadYtAdminData();
@@ -394,6 +427,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     setLoadingYt(true);
     try {
       const syncRes = await fetch('/api/youtube/sync', { method: 'POST' });
+      const syncContentType = syncRes.headers.get("content-type") || "";
+      
+      if (!syncContentType.includes("application/json")) {
+        throw new Error("Server returned an invalid response format (non-JSON).");
+      }
+
       const syncData = await syncRes.json();
       if (syncRes.ok) {
         alert(syncData.message || "Cache invalidated and cleared!");
