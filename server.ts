@@ -1965,10 +1965,20 @@ async function processTransactionSafe(orderId, isSuccess, method, amount) {
   } else {
     // If currentDir is root, distPath should be root/dist. If currentDir is already dist, use it.
     const distPath = currentDir.endsWith('dist') ? currentDir : path.join(currentDir, 'dist');
+    const indexPath = path.join(distPath, 'index.html');
+    console.log(`[Production Server] Current Directory: ${currentDir}`);
+    console.log(`[Production Server] Serving static files from: ${distPath}`);
+    console.log(`[Production Server] Main Index HTML file path: ${indexPath}`);
+    console.log(`[Production Server] Index file exists: ${fs.existsSync(indexPath)}`);
+
     app.use(express.static(distPath));
     app.use(express.static(path.join(currentDir, 'public'))); // Serve public dir if running from root
     app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
+      if (fs.existsSync(indexPath)) {
+        res.sendFile(indexPath);
+      } else {
+        res.status(404).send(`index.html not found in: ${distPath}. Build might have failed or not completed.`);
+      }
     });
 
   }
