@@ -206,17 +206,21 @@ async function startServer() {
   // Helper to fetch YouTube Config from Firestore securely using Firebase Client SDK
   async function getYouTubeConfig() {
     try {
-      const docRef = doc(db, "appSettings", "youtube");
-      const docSnap = await getDoc(docRef);
-      if (docSnap.exists()) {
-        const dbData = docSnap.data();
-        if (dbData) {
-          localYouTubeConfig = { ...localYouTubeConfig, ...dbData };
+      if (db) {
+        const docRef = doc(db, "appSettings", "youtube");
+        const docSnap = await getDoc(docRef);
+        if (docSnap.exists()) {
+          const dbData = docSnap.data();
+          if (dbData) {
+            localYouTubeConfig = { ...localYouTubeConfig, ...dbData };
+          }
+          return dbData;
         }
-        return dbData;
+      } else {
+        console.warn("Firestore db object is not initialized. Using local fallback instead.");
       }
-    } catch (err) {
-      console.warn("Firestore Client SDK inaccessible (using local fallback configuration store instead).");
+    } catch (err: any) {
+      console.warn("Firestore Client SDK inaccessible:", err?.message || err);
     }
     return localYouTubeConfig;
   }
@@ -339,11 +343,19 @@ async function startServer() {
         finalApiKey = existing?.apiKey || "";
       }
 
+      let cacheMinutes = 15;
+      if (cacheDurationMinutes !== undefined && cacheDurationMinutes !== null) {
+        const parsed = parseInt(String(cacheDurationMinutes), 10);
+        if (!isNaN(parsed) && parsed > 0) {
+          cacheMinutes = parsed;
+        }
+      }
+
       const configData = {
         enabled: !!enabled,
         apiKey: finalApiKey || "",
         channelId: channelId || "",
-        cacheDurationMinutes: parseInt(cacheDurationMinutes, 10) || 15,
+        cacheDurationMinutes: cacheMinutes,
         autoSync: autoSync ?? true,
         updatedAt: new Date().toISOString()
       };
@@ -351,11 +363,15 @@ async function startServer() {
       // Always save to the local in-memory store so it works offline/sandbox-isolated
       localYouTubeConfig = configData;
 
-      try {
-        const docRef = doc(db, "appSettings", "youtube");
-        await setDoc(docRef, configData);
-      } catch (err) {
-        console.warn("Failed to write YouTube config to remote Firestore. Saved locally in-memory instead.");
+      if (db) {
+        try {
+          const docRef = doc(db, "appSettings", "youtube");
+          await setDoc(docRef, configData);
+        } catch (err: any) {
+          console.warn("Failed to write YouTube config to remote Firestore. Saved locally in-memory instead. Error:", err?.message || err);
+        }
+      } else {
+        console.warn("Firestore db object is not initialized. Saved YouTube config locally in-memory.");
       }
 
       // Clear memory caches upon configuration change
@@ -366,7 +382,8 @@ async function startServer() {
 
       res.json({ success: true, message: "YouTube Integration Settings configured successfully!" });
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      console.error("Error in app.post(/api/youtube/config):", err);
+      res.status(500).json({ error: err.message || "Internal server error" });
     }
   });
 

@@ -349,6 +349,7 @@ export interface GameCategory {
   name: string;
   icon?: string; // Lucide icon or URL
   banner?: string; // Banner URL or Base64
+  logo?: string; // Game Logo (PNG/JPG/WEBP/SVG/Base64/URL)
   enabled: boolean;
   order: number;
   updatedAt?: number;

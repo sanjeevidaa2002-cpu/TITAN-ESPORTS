@@ -586,7 +586,15 @@ export const MatchesTab: React.FC<MatchesTabProps> = ({
 
                   {/* Logo overlay on lower bottom right */}
                   <div className="absolute bottom-3 right-4 z-10 w-11 h-11 rounded-lg border border-white/15 overflow-hidden bg-neutral-900 shadow-lg">
-                    <img src={t.logoUrl} alt="Room Host" className="w-full h-full object-cover" />
+                    <img 
+                      src={(() => {
+                        const cat = categories?.find(c => c.id === t.gameCategory);
+                        return (cat && cat.logo) ? cat.logo : t.logoUrl;
+                      })()} 
+                      alt="Room Host" 
+                      className="w-full h-full object-cover" 
+                      referrerPolicy="no-referrer"
+                    />
                   </div>
                 </div>
 

@@ -350,7 +350,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
         body: JSON.stringify(ytConfig)
       });
       
-      if (!saveRes.ok) throw new Error("Failed to save credentials before testing connection");
+      if (!saveRes.ok) {
+        let errMsg = "Failed to save credentials before testing connection";
+        try {
+          const errData = await saveRes.json();
+          if (errData && (errData.error || errData.message)) {
+            errMsg = errData.error || errData.message;
+          }
+        } catch (_) {}
+        throw new Error(errMsg);
+      }
 
       // Force cache sync
       await fetch('/api/youtube/sync', { method: 'POST' });

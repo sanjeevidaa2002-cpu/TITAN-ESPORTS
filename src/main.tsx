@@ -10,6 +10,19 @@ if (typeof window !== 'undefined') {
     if (typeof reason === 'string') return reason;
     
     const parts: string[] = [];
+    
+    // Scan all enumerable properties of the error object
+    try {
+      for (const key in reason) {
+        try {
+          const val = reason[key];
+          if (val && typeof val === 'string') {
+            parts.push(val);
+          }
+        } catch (_) {}
+      }
+    } catch (_) {}
+
     if (reason.message) parts.push(String(reason.message));
     if (reason.reason) parts.push(String(reason.reason));
     if (reason.stack) parts.push(String(reason.stack));
@@ -43,11 +56,13 @@ if (typeof window !== 'undefined') {
            text.includes('firestore client sdk inaccessible') ||
            text.includes('cloud firestore backend') ||
            text.includes('not_found') ||
+           text.includes('closed without opened') ||
+           text.includes('websocket closed') ||
            (text.includes('vite') && text.includes('connect'));
   };
 
   window.addEventListener('unhandledrejection', (event) => {
-    if (isViteWsError(event.reason)) {
+    if (isViteWsError(event.reason) || isViteWsError(event)) {
       event.preventDefault();
       event.stopPropagation();
     }
@@ -55,7 +70,7 @@ if (typeof window !== 'undefined') {
 
   window.addEventListener('error', (event) => {
     const message = event.error || event.message || '';
-    if (isViteWsError(message)) {
+    if (isViteWsError(message) || isViteWsError(event)) {
       event.preventDefault();
       event.stopPropagation();
     }

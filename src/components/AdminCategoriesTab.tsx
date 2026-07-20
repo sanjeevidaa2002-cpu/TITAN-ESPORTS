@@ -573,18 +573,252 @@ const CategoryCard: React.FC<CategoryCardProps> = ({
 
 
 // Main Component
+interface GameLogoCardProps {
+  gameId: string;
+  defaultName: string;
+  category: GameCategory | undefined;
+  onSave: (updated: GameCategory) => Promise<void>;
+  triggerNotification: (title: string, message: string, type: any) => void;
+}
+
+const GameLogoCard: React.FC<GameLogoCardProps> = ({
+  gameId,
+  defaultName,
+  category,
+  onSave,
+  triggerNotification
+}) => {
+  const [localLogo, setLocalLogo] = useState<string>(category?.logo || '');
+  const [isUploading, setIsUploading] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Compare local state with the saved value to see if there are unsaved changes
+  const hasUnsavedChanges = localLogo !== (category?.logo || '');
+
+  // Handle file selections
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Supported Formats check
+    const validTypes = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/svg+xml'];
+    if (!validTypes.includes(file.type)) {
+      triggerNotification("Invalid Format", "Only PNG, JPG, JPEG, WEBP, and SVG formats are supported.", "alert");
+      return;
+    }
+
+    // Max 10 MB limit check
+    if (file.size > 10 * 1024 * 1024) {
+      triggerNotification("File Too Large", "Maximum file size allowed is 10 MB.", "alert");
+      return;
+    }
+
+    setIsUploading(true);
+    try {
+      let base64Result = '';
+      if (file.type === 'image/svg+xml') {
+        const reader = new FileReader();
+        base64Result = await new Promise<string>((resolve, reject) => {
+          reader.onload = (event) => resolve(event.target?.result as string);
+          reader.onerror = (err) => reject(err);
+          reader.readAsDataURL(file);
+        });
+      } else {
+        base64Result = await compressImage(file, 0.5, 512);
+      }
+
+      setLocalLogo(base64Result);
+      triggerNotification("Preview Loaded", "New logo loaded. Please click 'Save Changes' to apply.", "info");
+    } catch (err) {
+      console.error("Image loading failed:", err);
+      triggerNotification("Upload Failed", "Could not process image file.", "alert");
+    } finally {
+      setIsUploading(false);
+      if (e.target) {
+        e.target.value = '';
+      }
+    }
+  };
+
+  const handleUploadClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleRemoveLogo = () => {
+    setLocalLogo('');
+    triggerNotification("Removed", "Logo removed from preview. Click 'Save Changes' to apply.", "info");
+  };
+
+  const handleSaveLogo = async () => {
+    setIsSaving(true);
+    try {
+      const currentCat = category || {
+        id: gameId,
+        name: defaultName,
+        enabled: true,
+        order: 99,
+      };
+
+      const updatedCategory: GameCategory = {
+        ...currentCat,
+        logo: localLogo,
+        updatedAt: Date.now()
+      };
+
+      await onSave(updatedCategory);
+      triggerNotification("Success", `${defaultName} Logo updated successfully!`, "success");
+    } catch (err) {
+      console.error("Save logo failed:", err);
+      triggerNotification("Error Saving", `Failed to save ${defaultName} logo.`, "alert");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleReset = () => {
+    setLocalLogo(category?.logo || '');
+    triggerNotification("Reset", "Unsaved changes discarded.", "info");
+  };
+
+  return (
+    <div className="bg-[#111116] border border-white/5 rounded-3xl p-6 shadow-2xl relative overflow-hidden flex flex-col justify-between group/card hover:border-white/10 transition-all duration-300">
+      <div className={`absolute top-0 inset-x-0 h-[2px] transition-all duration-300 ${
+        hasUnsavedChanges 
+          ? 'bg-gradient-to-r from-yellow-500 via-amber-400 to-yellow-500 shadow-[0_1px_5px_rgba(245,158,11,0.5)]' 
+          : 'bg-gradient-to-r from-gold-500/30 to-amber-600/30'
+      }`} />
+
+      <div className="space-y-4">
+        <div className="flex justify-between items-start">
+          <div>
+            <h3 className="font-black text-white text-base tracking-wide truncate">{defaultName}</h3>
+            <span className="text-[10px] font-mono text-neutral-500 uppercase tracking-wider block mt-0.5">Database ID: {gameId}</span>
+          </div>
+          {hasUnsavedChanges && (
+            <span className="bg-amber-500/10 border border-amber-500/20 text-amber-400 text-[8px] font-black px-1.5 py-0.5 rounded-md uppercase tracking-wider animate-pulse">
+              Unsaved Changes
+            </span>
+          )}
+        </div>
+
+        <div className="relative bg-[#0a0a0f] border border-white/5 rounded-2xl p-4 flex flex-col items-center justify-center min-h-[140px] overflow-hidden group/preview">
+          {localLogo ? (
+            <div className="relative">
+              <img 
+                src={localLogo} 
+                alt={`${defaultName} Logo`} 
+                className="w-24 h-24 object-contain rounded-xl border border-white/10 shadow-lg bg-neutral-900/60"
+                referrerPolicy="no-referrer"
+              />
+              {isUploading && (
+                <div className="absolute inset-0 bg-[#0a0a0f]/80 backdrop-blur-sm rounded-xl flex items-center justify-center">
+                  <RefreshCw className="w-5 h-5 text-gold-400 animate-spin" />
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="flex flex-col items-center gap-2 text-neutral-500">
+              <ImageIcon className="w-10 h-10 stroke-[1.5]" />
+              <span className="text-[10px] uppercase font-bold tracking-wider">No Logo Configured</span>
+            </div>
+          )}
+        </div>
+
+        <input 
+          type="file"
+          ref={fileInputRef}
+          onChange={handleFileChange}
+          accept=".png,.jpg,.jpeg,.webp,.svg"
+          className="hidden"
+        />
+
+        <div className="flex gap-2.5">
+          {localLogo ? (
+            <>
+              <button
+                type="button"
+                onClick={handleUploadClick}
+                className="flex-1 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-white text-xs font-bold uppercase tracking-wide transition-all cursor-pointer border border-white/10 flex items-center justify-center gap-1.5"
+              >
+                Change Logo
+              </button>
+              <button
+                type="button"
+                onClick={handleRemoveLogo}
+                className="flex-1 py-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs font-bold uppercase tracking-wide transition-all cursor-pointer border border-red-500/10 flex items-center justify-center gap-1.5"
+              >
+                Remove Logo
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              onClick={handleUploadClick}
+              className="w-full flex items-center justify-center gap-2 border border-dashed border-white/10 rounded-xl py-3 px-4 bg-[#111116] hover:bg-neutral-800 hover:border-gold-500/20 text-neutral-400 hover:text-white transition-all cursor-pointer text-xs font-black uppercase tracking-wider"
+            >
+              <Upload className="w-4 h-4 text-gold-400" />
+              <span>Upload Logo</span>
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="border-t border-white/5 pt-4 mt-5 flex gap-2.5">
+        {hasUnsavedChanges && (
+          <button
+            type="button"
+            onClick={handleReset}
+            className="p-2 rounded-xl border border-white/10 text-neutral-400 hover:text-white transition-all cursor-pointer"
+            title="Discard changes"
+          >
+            <RotateCcw className="w-4 h-4" />
+          </button>
+        )}
+        <button
+          type="button"
+          disabled={isSaving || !hasUnsavedChanges}
+          onClick={handleSaveLogo}
+          className={`flex-1 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest flex items-center justify-center gap-1.5 transition-all shadow-md ${
+            hasUnsavedChanges
+              ? 'bg-gradient-to-r from-gold-500 to-amber-600 hover:brightness-110 text-neutral-950 cursor-pointer'
+              : 'bg-neutral-800/50 text-neutral-500 border border-white/5 cursor-not-allowed'
+          }`}
+        >
+          {isSaving ? (
+            <RefreshCw className="w-4 h-4 animate-spin" />
+          ) : (
+            <Check className="w-4 h-4" />
+          )}
+          <span>{isSaving ? 'Saving...' : 'Save Changes'}</span>
+        </button>
+      </div>
+    </div>
+  );
+};
+
 export const AdminCategoriesTab: React.FC<{ showConfirm?: (title: string, message: string, onConfirm: () => void | Promise<void>) => void }> = ({ showConfirm }) => {
   const { categories, saveCategoryAdmin, deleteCategoryAdmin, triggerNotification } = useGame();
   
+  // Sub-Tab selection
+  const [activeSubTab, setActiveSubTab] = useState<'logos' | 'categories'>('logos');
+
   // Create New Category drawer state
   const [isAdding, setIsAdding] = useState(false);
   const [newCatName, setNewCatName] = useState('');
   const [newCatId, setNewCatId] = useState('');
   const [newCatEmoji, setNewCatEmoji] = useState('🎮');
 
+  const SUPPORTED_LOGO_GAMES = [
+    { id: 'free_fire', name: 'Free Fire' },
+    { id: 'pubg_mobile', name: 'PUBG Mobile' },
+    { id: 'clash_of_clans', name: 'Clash of Clans' },
+    { id: 'free_match', name: 'Free Match' },
+    { id: 'hacker_match', name: 'Hacker Match' }
+  ];
+
   const handleOpenAdd = () => {
     setNewCatName('');
-    // Auto-generate ID on input change
     setNewCatId('');
     setNewCatEmoji('🎮');
     setIsAdding(true);
@@ -592,7 +826,6 @@ export const AdminCategoriesTab: React.FC<{ showConfirm?: (title: string, messag
 
   const handleNameChange = (val: string) => {
     setNewCatName(val);
-    // clean ID
     const sanitizedId = val.toLowerCase()
       .replace(/[^a-z0-9\s]/g, '')
       .replace(/\s+/g, '_');
@@ -610,7 +843,6 @@ export const AdminCategoriesTab: React.FC<{ showConfirm?: (title: string, messag
       return;
     }
 
-    // Check duplicate IDs
     if (categories.some(c => c.id === newCatId)) {
       alert(`A category with ID "${newCatId}" already exists. Please choose a different name.`);
       return;
@@ -628,7 +860,7 @@ export const AdminCategoriesTab: React.FC<{ showConfirm?: (title: string, messag
     try {
       await saveCategoryAdmin(newCategory);
       setIsAdding(false);
-      triggerNotification("Success", "Game Category Icon Updated Successfully.", "success" as any);
+      triggerNotification("Success", "Game Category Created Successfully.", "success" as any);
     } catch (err) {
       console.error("An error occurred");
       alert('Failed to create game category.');
@@ -657,7 +889,6 @@ export const AdminCategoriesTab: React.FC<{ showConfirm?: (title: string, messag
     }
   };
 
-  // Re-ordering logic
   const handleMoveOrder = async (cat: GameCategory, direction: 'up' | 'down') => {
     const currentIndex = categories.findIndex(c => c.id === cat.id);
     if (currentIndex === -1) return;
@@ -667,12 +898,10 @@ export const AdminCategoriesTab: React.FC<{ showConfirm?: (title: string, messag
 
     const otherCat = categories[targetIndex];
     
-    // Swap original orders
     const tempOrder = cat.order || 1;
     const catUpdated = { ...cat, order: otherCat.order || 1, updatedAt: Date.now() };
     const otherUpdated = { ...otherCat, order: tempOrder, updatedAt: Date.now() };
 
-    // Set distinctive order values if they are identical
     if (catUpdated.order === otherUpdated.order) {
       catUpdated.order = direction === 'up' ? (otherCat.order || 1) - 1 : (otherCat.order || 1) + 1;
     }
@@ -693,11 +922,11 @@ export const AdminCategoriesTab: React.FC<{ showConfirm?: (title: string, messag
             <span className="uppercase">Game Category Manager</span>
           </h2>
           <p className="text-xs text-neutral-400 mt-1">
-            Super Admin center to upload custom category icons, set URLs, and toggle tournament visibility dynamically without touching source code.
+            Super Admin center to upload custom category icons, logos, and toggle tournament visibility dynamically without touching source code.
           </p>
         </div>
         
-        {!isAdding && (
+        {activeSubTab === 'categories' && !isAdding && (
           <button
             onClick={handleOpenAdd}
             className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-gold-500 to-amber-600 text-neutral-950 text-xs font-black uppercase tracking-widest flex items-center gap-2 shadow-lg hover:brightness-110 active:scale-95 transition-all cursor-pointer"
@@ -708,110 +937,167 @@ export const AdminCategoriesTab: React.FC<{ showConfirm?: (title: string, messag
         )}
       </div>
 
-      {/* Option to create a new category drawer form */}
-      {isAdding && (
-        <div className="bg-[#111116] border border-white/5 rounded-3xl p-6 shadow-2xl relative overflow-hidden max-w-lg">
-          <div className="absolute top-0 inset-x-0 h-[2px] bg-gradient-to-r from-purple-500 to-gold-500" />
-          
-          <div className="flex justify-between items-center mb-5">
-            <h3 className="font-extrabold text-white text-xs uppercase tracking-wider flex items-center gap-1.5">
-              <span className="text-purple-400">❖</span>
-              <span>Create New Game Category</span>
-            </h3>
-            <button 
-              onClick={() => setIsAdding(false)}
-              className="p-1.5 rounded-lg hover:bg-white/5 text-neutral-400 hover:text-white transition-all cursor-pointer"
-            >
-              <X className="w-5 h-5" />
-            </button>
+      {/* Sub-Tab Navigation */}
+      <div className="flex border-b border-white/5 pb-1 gap-6">
+        <button
+          onClick={() => setActiveSubTab('logos')}
+          className={`pb-3 px-1 text-xs font-black uppercase tracking-wider border-b-2 transition-all cursor-pointer flex items-center gap-1.5 ${
+            activeSubTab === 'logos'
+              ? 'border-gold-500 text-gold-400'
+              : 'border-transparent text-neutral-400 hover:text-white'
+          }`}
+        >
+          🛡️ Game Logo Manager
+        </button>
+        <button
+          onClick={() => setActiveSubTab('categories')}
+          className={`pb-3 px-1 text-xs font-black uppercase tracking-wider border-b-2 transition-all cursor-pointer flex items-center gap-1.5 ${
+            activeSubTab === 'categories'
+              ? 'border-gold-500 text-gold-400'
+              : 'border-transparent text-neutral-400 hover:text-white'
+          }`}
+        >
+          🎮 Category Structure
+        </button>
+      </div>
+
+      {/* Sub-Tab Content */}
+      {activeSubTab === 'logos' ? (
+        <div className="space-y-6">
+          <div className="bg-[#111116] border border-white/5 rounded-3xl p-5 shadow-xl flex items-start gap-3 text-xs text-neutral-400 leading-relaxed">
+            <Info className="w-5 h-5 text-gold-400 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <strong className="text-white block font-bold">Game Logo Manager:</strong>
+              <p>
+                Configure separate game-specific logos for major combat arenas. Supported formats include <strong>PNG, JPG, JPEG, WEBP, and SVG</strong> up to <strong>10 MB</strong>. Preview is generated immediately upon file selection, and changes take effect on the user panel instantly once you click <strong>Save Changes</strong>.
+              </p>
+            </div>
           </div>
 
-          <form onSubmit={handleCreateCategorySubmit} className="space-y-4">
-            <div className="space-y-1.5">
-              <label className="text-[9px] font-black uppercase tracking-widest text-neutral-400 block">Category Name</label>
-              <input
-                type="text"
-                required
-                value={newCatName}
-                onChange={e => handleNameChange(e.target.value)}
-                placeholder="e.g. Call of Duty Mobile"
-                className="w-full bg-[#0a0a0f] border border-white/5 rounded-xl py-2.5 px-4 text-xs text-white focus:outline-none focus:border-purple-500 transition-all font-semibold"
-              />
-            </div>
-
-            <div className="space-y-1.5">
-              <label className="text-[9px] font-black uppercase tracking-widest text-neutral-400 block">Category Database ID</label>
-              <input
-                type="text"
-                required
-                value={newCatId}
-                onChange={e => setNewCatId(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ''))}
-                placeholder="e.g. cod_mobile"
-                className="w-full bg-[#0a0a0f] border border-white/5 rounded-xl py-2.5 px-4 text-xs text-white focus:outline-none focus:border-purple-500 transition-all font-mono font-semibold"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-[9px] font-black uppercase tracking-widest text-neutral-400 block">Default Placeholder Emoji</label>
-              <div className="grid grid-cols-6 gap-2 bg-[#0a0a0f] p-3 rounded-2xl border border-white/5">
-                {['🎮', '🔥', '🎯', '🏰', '🆓', '⚔️', '👾', '🎖️', '🚀', '💣', '🛡️', '🏆'].map(emoji => (
-                  <button
-                    key={emoji}
-                    type="button"
-                    onClick={() => setNewCatEmoji(emoji)}
-                    className={`p-2 bg-[#111116] border rounded-lg text-lg hover:bg-neutral-800 transition-all cursor-pointer flex items-center justify-center ${newCatEmoji === emoji ? 'border-purple-500 bg-purple-500/10' : 'border-white/5'}`}
-                  >
-                    {emoji}
-                  </button>
-                ))}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {SUPPORTED_LOGO_GAMES.map((game) => {
+              const cat = categories.find(c => c.id === game.id);
+              return (
+                <GameLogoCard
+                  key={game.id}
+                  gameId={game.id}
+                  defaultName={game.name}
+                  category={cat}
+                  onSave={saveCategoryAdmin}
+                  triggerNotification={triggerNotification}
+                />
+              );
+            })}
+          </div>
+        </div>
+      ) : (
+        <>
+          {/* Option to create a new category drawer form */}
+          {isAdding && (
+            <div className="bg-[#111116] border border-white/5 rounded-3xl p-6 shadow-2xl relative overflow-hidden max-w-lg">
+              <div className="absolute top-0 inset-x-0 h-[2px] bg-gradient-to-r from-purple-500 to-gold-500" />
+              
+              <div className="flex justify-between items-center mb-5">
+                <h3 className="font-extrabold text-white text-xs uppercase tracking-wider flex items-center gap-1.5">
+                  <span className="text-purple-400">❖</span>
+                  <span>Create New Game Category</span>
+                </h3>
+                <button 
+                  onClick={() => setIsAdding(false)}
+                  className="p-1.5 rounded-lg hover:bg-white/5 text-neutral-400 hover:text-white transition-all cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
               </div>
-            </div>
 
-            <div className="flex gap-2.5 justify-end pt-2">
-              <button
-                type="button"
-                onClick={() => setIsAdding(false)}
-                className="px-4 py-2 rounded-xl border border-white/10 text-neutral-400 hover:text-white text-xs font-semibold uppercase tracking-wider transition-all cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                className="px-5 py-2 rounded-xl bg-gradient-to-r from-gold-500 to-amber-600 text-neutral-950 text-xs font-black uppercase tracking-widest shadow-lg hover:brightness-110 active:scale-95 transition-all cursor-pointer"
-              >
-                Create Category
-              </button>
+              <form onSubmit={handleCreateCategorySubmit} className="space-y-4">
+                <div className="space-y-1.5">
+                  <label className="text-[9px] font-black uppercase tracking-widest text-neutral-400 block">Category Name</label>
+                  <input
+                    type="text"
+                    required
+                    value={newCatName}
+                    onChange={e => handleNameChange(e.target.value)}
+                    placeholder="e.g. Call of Duty Mobile"
+                    className="w-full bg-[#0a0a0f] border border-white/5 rounded-xl py-2.5 px-4 text-xs text-white focus:outline-none focus:border-purple-500 transition-all font-semibold"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-[9px] font-black uppercase tracking-widest text-neutral-400 block">Category Database ID</label>
+                  <input
+                    type="text"
+                    required
+                    value={newCatId}
+                    onChange={e => setNewCatId(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ''))}
+                    placeholder="e.g. cod_mobile"
+                    className="w-full bg-[#0a0a0f] border border-white/5 rounded-xl py-2.5 px-4 text-xs text-white focus:outline-none focus:border-purple-500 transition-all font-mono font-semibold"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-[9px] font-black uppercase tracking-widest text-neutral-400 block">Default Placeholder Emoji</label>
+                  <div className="grid grid-cols-6 gap-2 bg-[#0a0a0f] p-3 rounded-2xl border border-white/5">
+                    {['🎮', '🔥', '🎯', '🏰', '🆓', '⚔️', '👾', '🎖️', '🚀', '💣', '🛡️', '🏆'].map(emoji => (
+                      <button
+                        key={emoji}
+                        type="button"
+                        onClick={() => setNewCatEmoji(emoji)}
+                        className={`p-2 bg-[#111116] border rounded-lg text-lg hover:bg-neutral-800 transition-all cursor-pointer flex items-center justify-center ${newCatEmoji === emoji ? 'border-purple-500 bg-purple-500/10' : 'border-white/5'}`}
+                      >
+                        {emoji}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex gap-2.5 justify-end pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsAdding(false)}
+                    className="px-4 py-2 rounded-xl border border-white/10 text-neutral-400 hover:text-white text-xs font-semibold uppercase tracking-wider transition-all cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="px-5 py-2 rounded-xl bg-gradient-to-r from-gold-500 to-amber-600 text-neutral-950 text-xs font-black uppercase tracking-widest shadow-lg hover:brightness-110 active:scale-95 transition-all cursor-pointer"
+                  >
+                    Create Category
+                  </button>
+                </div>
+              </form>
             </div>
-          </form>
-        </div>
+          )}
+
+          {/* Grid List of Category Cards */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {categories.map((cat, index) => (
+              <CategoryCard
+                key={cat.id}
+                category={cat}
+                onSave={saveCategoryAdmin}
+                onDelete={handleDeleteCategory}
+                onMove={handleMoveOrder}
+                isFirst={index === 0}
+                isLast={index === categories.length - 1}
+                triggerNotification={triggerNotification}
+              />
+            ))}
+          </div>
+
+          {/* Informative Footer Block */}
+          <div className="bg-[#111116] border border-white/5 rounded-3xl p-5 shadow-xl flex items-start gap-3 text-xs text-neutral-400 leading-relaxed">
+            <Info className="w-5 h-5 text-purple-400 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <strong className="text-white block font-bold">Dynamic Synchronization Note:</strong>
+              <p>
+                When icons or active states are updated here, changes are synchronized immediately in Firebase. Any visitor on the platform will instantly view the new category icons, orders, and statuses without requiring a manual page refresh. Clean cached images are busted instantly using updated-at timestamps.
+              </p>
+            </div>
+          </div>
+        </>
       )}
-
-      {/* Grid List of Category Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {categories.map((cat, index) => (
-          <CategoryCard
-            key={cat.id}
-            category={cat}
-            onSave={saveCategoryAdmin}
-            onDelete={handleDeleteCategory}
-            onMove={handleMoveOrder}
-            isFirst={index === 0}
-            isLast={index === categories.length - 1}
-            triggerNotification={triggerNotification}
-          />
-        ))}
-      </div>
-
-      {/* Informative Footer Block */}
-      <div className="bg-[#111116] border border-white/5 rounded-3xl p-5 shadow-xl flex items-start gap-3 text-xs text-neutral-400 leading-relaxed">
-        <Info className="w-5 h-5 text-purple-400 shrink-0 mt-0.5" />
-        <div className="space-y-1">
-          <strong className="text-white block font-bold">Dynamic Synchronization Note:</strong>
-          <p>
-            When icons or active states are updated here, changes are synchronized immediately in Firebase. Any visitor on the platform will instantly view the new category icons, orders, and statuses without requiring a manual page refresh. Clean cached images are busted instantly using updated-at timestamps.
-          </p>
-        </div>
-      </div>
 
     </div>
   );
