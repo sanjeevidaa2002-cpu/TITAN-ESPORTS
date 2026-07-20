@@ -10,7 +10,7 @@ This guide describes how to deploy the full-stack Victory Arena Esports applicat
    Render's free tier provides **512 MB of RAM**. Previously, the build commanded `NODE_OPTIONS=--max-old-space-size=4096`, which allowed Node to balloon up to 4 GB. The OS would immediately terminate (OOM-kill) the build process when it exceeded 512 MB. We changed this to `--max-old-space-size=512`, which forces Node to garbage collect aggressively, successfully building the Vite + Tailwind CSS bundles within the limit.
 
 2. **Server Bundle Size Reduced**:
-   We optimized the production server build command to compile `server.ts` into a lightweight, bundled format `dist/server.cjs` without generating unnecessary sourcemaps, saving valuable memory.
+   We optimized the production server build command to compile `server.ts` into a lightweight, bundled format `server.cjs` (in the root directory) without generating unnecessary sourcemaps, saving valuable memory.
 
 3. **Removed `bun.lock`**:
    Render automatically attempts to build with Bun if `bun.lock` is detected in the repository. This caused compatibility issues with several custom Node scripts and standard packages. Deleting `bun.lock` guarantees Render deploys using stable **Node.js and npm**.

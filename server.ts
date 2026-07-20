@@ -11,9 +11,11 @@ import { fileURLToPath } from "url";
 // Safe cross-platform directory resolution for ESM (dev) and CJS (prod)
 const currentDir = typeof __dirname !== "undefined"
   ? __dirname
-  : path.dirname(fileURLToPath(import.meta.url));
+  : path.dirname(fileURLToPath(import.meta["url"]));
 
-const isProduction = currentDir.endsWith('dist') || 
+const isProduction = process.env.NODE_ENV === "production" || 
+  (typeof __filename !== "undefined" && __filename.endsWith('.cjs')) ||
+  currentDir.endsWith('dist') || 
   (fs.existsSync(path.join(currentDir, 'index.html')) && !fs.existsSync(path.join(currentDir, 'server.ts')));
 import crypto from "crypto";
 import multer from "multer";
@@ -23,6 +25,29 @@ import { initializeFirestore, doc, getDoc, setDoc, updateDoc, collection, addDoc
 
 // Silence internal SDK logs early
 setLogLevel('silent');
+
+// Intercept console.error to filter out Firebase Client SDK quota limits, gRPC idle disconnects, and not-found spam
+const originalConsoleError = console.error;
+const originalConsoleWarn = console.warn;
+
+function isIgnorableFirebaseError(args: any[]) {
+  const msg = args.map(a => (typeof a === 'string' ? a : JSON.stringify(a) || '')).join(' ');
+  return msg.includes('Quota limit exceeded') ||
+         msg.includes('Firestore Client SDK inaccessible') ||
+         msg.includes('GrpcConnection RPC \'Listen\' stream') ||
+         msg.includes('Could not reach Cloud Firestore backend') ||
+         msg.includes('NOT_FOUND');
+}
+
+console.error = (...args: any[]) => {
+  if (isIgnorableFirebaseError(args)) return;
+  originalConsoleError.apply(console, args);
+};
+
+console.warn = (...args: any[]) => {
+  if (isIgnorableFirebaseError(args)) return;
+  originalConsoleWarn.apply(console, args);
+};
 
 import firebaseConfig from "./firebase-applet-config.json";
 
@@ -1938,9 +1963,10 @@ async function processTransactionSafe(orderId, isSuccess, method, amount) {
 
     app.use(vite.middlewares);
   } else {
-    const distPath = currentDir;
+    // If currentDir is root, distPath should be root/dist. If currentDir is already dist, use it.
+    const distPath = currentDir.endsWith('dist') ? currentDir : path.join(currentDir, 'dist');
     app.use(express.static(distPath));
-    app.use(express.static(path.join(currentDir, '..', 'public')));
+    app.use(express.static(path.join(currentDir, 'public'))); // Serve public dir if running from root
     app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });

@@ -38,6 +38,11 @@ if (typeof window !== 'undefined') {
            text.includes('closeevent') ||
            text.includes('ws://') ||
            text.includes('wss://') ||
+           text.includes('quota limit exceeded') ||
+           text.includes('grpcconnection rpc') ||
+           text.includes('firestore client sdk inaccessible') ||
+           text.includes('cloud firestore backend') ||
+           text.includes('not_found') ||
            (text.includes('vite') && text.includes('connect'));
   };
 
