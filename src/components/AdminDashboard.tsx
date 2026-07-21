@@ -277,11 +277,26 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     }
   }, [activeTab]);
 
+  const getBaseUrl = () => {
+    if (typeof window !== 'undefined') {
+      const hostname = window.location.hostname;
+      if (hostname === 'localhost' || hostname === '127.0.0.1') {
+        return 'http://localhost:3000';
+      } else if (hostname.includes('titanesp.site')) {
+        return 'https://titanesp.site';
+      } else {
+        return window.location.origin;
+      }
+    }
+    return 'https://titanesp.site';
+  };
+
   const loadYtAdminData = async () => {
     setLoadingYt(true);
     setYtTestStatus(null);
     try {
-      const configRes = await fetch('/api/youtube/config');
+      const baseUrl = getBaseUrl();
+      const configRes = await fetch(`${baseUrl}/api/youtube/config`);
       if (configRes.ok) {
         const contentType = configRes.headers.get("content-type") || "";
         if (!contentType.includes("application/json")) {
@@ -309,28 +324,28 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
         }
 
         // Credentials exist, load full details
-        const channelRes = await fetch('/api/youtube/channel');
+        const channelRes = await fetch(`${baseUrl}/api/youtube/channel`);
         if (channelRes.ok && (channelRes.headers.get("content-type") || "").includes("application/json")) {
           try {
             setYtChannelInfo(await channelRes.json());
           } catch (_) {}
         }
         
-        const liveRes = await fetch('/api/youtube/live');
+        const liveRes = await fetch(`${baseUrl}/api/youtube/live`);
         if (liveRes.ok && (liveRes.headers.get("content-type") || "").includes("application/json")) {
           try {
             setYtLiveInfo(await liveRes.json());
           } catch (_) {}
         }
         
-        const videosRes = await fetch('/api/youtube/videos');
+        const videosRes = await fetch(`${baseUrl}/api/youtube/videos`);
         if (videosRes.ok && (videosRes.headers.get("content-type") || "").includes("application/json")) {
           try {
             setYtVideos(await videosRes.json());
           } catch (_) {}
         }
 
-        const shortsRes = await fetch('/api/youtube/shorts');
+        const shortsRes = await fetch(`${baseUrl}/api/youtube/shorts`);
         if (shortsRes.ok && (shortsRes.headers.get("content-type") || "").includes("application/json")) {
           try {
             setYtShorts(await shortsRes.json());
@@ -353,21 +368,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       const channelId = ytConfig.channelId;
 
       // Strictly validate both formats if they're customized
-      if (apiKey && apiKey !== '••••••••') {
+      if (apiKey && apiKey !== '••••••••' && !apiKey.includes('••••')) {
         if (!apiKey.trim().startsWith("AIzaSy")) {
           throw new Error("Invalid API Key format: Key must start with 'AIzaSy'.");
         }
       }
-      if (channelId) {
-        if (!channelId.trim().startsWith("UC")) {
-          throw new Error("Invalid Channel ID format: Channel ID must start with 'UC'.");
-        }
-        if (channelId.trim().length !== 24) {
-          throw new Error(`Invalid Channel ID format: Channel ID must be exactly 24 characters (entered ${channelId.trim().length} chars).`);
-        }
+      if (!channelId || channelId.trim() === '') {
+        throw new Error("Channel ID is required.");
+      }
+      if (!channelId.trim().startsWith("UC")) {
+        throw new Error("Invalid Channel ID format: Channel ID must start with 'UC'.");
+      }
+      if (channelId.trim().length !== 24) {
+        throw new Error(`Invalid Channel ID format: Channel ID must be exactly 24 characters (entered ${channelId.trim().length} chars).`);
       }
 
-      const res = await fetch('/api/youtube/config', {
+      const baseUrl = getBaseUrl();
+      const res = await fetch(`${baseUrl}/api/youtube/config`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(ytConfig)
@@ -409,7 +426,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       const cleanKey = apiKey.trim();
       const cleanChannel = channelId.trim();
 
-      if (cleanKey !== '••••••••' && !cleanKey.startsWith("AIzaSy")) {
+      if (cleanKey !== '••••••••' && !cleanKey.includes('••••') && !cleanKey.startsWith("AIzaSy")) {
         throw new Error("Invalid API Key format: Key must start with 'AIzaSy'.");
       }
       if (!cleanChannel.startsWith("UC")) {
@@ -419,7 +436,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
         throw new Error(`Invalid Channel ID format: Channel ID must be exactly 24 characters (entered ${cleanChannel.length} chars).`);
       }
 
-      const testRes = await fetch('/api/youtube/test-connection', {
+      const baseUrl = getBaseUrl();
+      const testRes = await fetch(`${baseUrl}/api/youtube/test-connection`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ apiKey: cleanKey, channelId: cleanChannel })
@@ -467,7 +485,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       const apiKey = ytConfig.apiKey;
       const channelId = ytConfig.channelId;
 
-      if (!apiKey || apiKey === '••••••••' || apiKey.trim() === '') {
+      if (!apiKey || apiKey === '••••••••' || apiKey.includes('••••') || apiKey.trim() === '') {
         throw new Error("API Key required: Please enter your YouTube Data API v3 Key.");
       }
       if (!channelId || channelId.trim() === '') {
@@ -487,7 +505,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
         throw new Error(`Invalid Channel ID format: Channel ID must be exactly 24 characters (entered ${cleanChannel.length} chars).`);
       }
 
-      const connectRes = await fetch('/api/youtube/connect', {
+      const baseUrl = getBaseUrl();
+      const connectRes = await fetch(`${baseUrl}/api/youtube/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ apiKey: cleanKey, channelId: cleanChannel })
@@ -521,7 +540,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     setLoadingYt(true);
     setYtTestStatus(null);
     try {
-      const disconnectRes = await fetch('/api/youtube/disconnect', { method: 'POST' });
+      const baseUrl = getBaseUrl();
+      const disconnectRes = await fetch(`${baseUrl}/api/youtube/disconnect`, { method: 'POST' });
       const contentType = disconnectRes.headers.get("content-type") || "";
       
       if (!contentType.includes("application/json")) {
@@ -556,7 +576,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     setLoadingYt(true);
     setYtTestStatus(null);
     try {
-      const syncRes = await fetch('/api/youtube/sync', { method: 'POST' });
+      const baseUrl = getBaseUrl();
+      const syncRes = await fetch(`${baseUrl}/api/youtube/sync`, { method: 'POST' });
       const contentType = syncRes.headers.get("content-type") || "";
       
       if (!contentType.includes("application/json")) {

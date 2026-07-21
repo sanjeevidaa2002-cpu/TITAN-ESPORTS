@@ -31,6 +31,20 @@ let lastYtFetch = 0;
 const CACHE_TTL = 1000 * 60 * 5;
 const YT_CACHE_KEY = "titangaming_yt_cache";
 
+const getBaseUrl = () => {
+  if (typeof window !== 'undefined') {
+    const hostname = window.location.hostname;
+    if (hostname === 'localhost' || hostname === '127.0.0.1') {
+      return 'http://localhost:3000';
+    } else if (hostname.includes('titanesp.site')) {
+      return 'https://titanesp.site';
+    } else {
+      return window.location.origin;
+    }
+  }
+  return 'https://titanesp.site';
+};
+
 interface ChannelInfo {
   id: string;
   title: string;
@@ -84,7 +98,8 @@ export const preloadYouTubeData = async () => {
 
   isFetchingYT = true;
   try {
-    const configRes = await fetch('/api/youtube/config');
+    const baseUrl = getBaseUrl();
+    const configRes = await fetch(`${baseUrl}/api/youtube/config`);
     if (!configRes.ok) return;
 
     const configContentType = configRes.headers.get("content-type") || "";
@@ -98,10 +113,10 @@ export const preloadYouTubeData = async () => {
     }
 
     const [channelRes, videosRes, shortsRes, liveRes] = await Promise.all([
-      fetch('/api/youtube/channel'),
-      fetch('/api/youtube/videos'),
-      fetch('/api/youtube/shorts'),
-      fetch('/api/youtube/live')
+      fetch(`${baseUrl}/api/youtube/channel`),
+      fetch(`${baseUrl}/api/youtube/videos`),
+      fetch(`${baseUrl}/api/youtube/shorts`),
+      fetch(`${baseUrl}/api/youtube/live`)
     ]);
 
     let newChannel = null;
@@ -193,7 +208,8 @@ export const YouTubeTab: React.FC = () => {
     if (!cachedStr) setError(null);
 
     try {
-      const configRes = await fetch('/api/youtube/config');
+      const baseUrl = getBaseUrl();
+      const configRes = await fetch(`${baseUrl}/api/youtube/config`);
       if (!configRes.ok) throw new Error("Failed to load YouTube setup configuration");
       
       const configContentType = configRes.headers.get("content-type") || "";
@@ -211,10 +227,10 @@ export const YouTubeTab: React.FC = () => {
       }
 
       const [channelRes, videosRes, shortsRes, liveRes] = await Promise.all([
-        fetch('/api/youtube/channel'),
-        fetch('/api/youtube/videos'),
-        fetch('/api/youtube/shorts'),
-        fetch('/api/youtube/live')
+        fetch(`${baseUrl}/api/youtube/channel`),
+        fetch(`${baseUrl}/api/youtube/videos`),
+        fetch(`${baseUrl}/api/youtube/shorts`),
+        fetch(`${baseUrl}/api/youtube/live`)
       ]);
 
       let newChannel = null;
