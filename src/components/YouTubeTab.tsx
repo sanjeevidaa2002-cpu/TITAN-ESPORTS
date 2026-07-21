@@ -98,8 +98,7 @@ export const preloadYouTubeData = async () => {
 
   isFetchingYT = true;
   try {
-    const baseUrl = getBaseUrl();
-    const configRes = await fetch(`${baseUrl}/api/youtube/config`);
+    const configRes = await fetch('/api/youtube/config');
     if (!configRes.ok) return;
 
     const configContentType = configRes.headers.get("content-type") || "";
@@ -113,10 +112,10 @@ export const preloadYouTubeData = async () => {
     }
 
     const [channelRes, videosRes, shortsRes, liveRes] = await Promise.all([
-      fetch(`${baseUrl}/api/youtube/channel`),
-      fetch(`${baseUrl}/api/youtube/videos`),
-      fetch(`${baseUrl}/api/youtube/shorts`),
-      fetch(`${baseUrl}/api/youtube/live`)
+      fetch('/api/youtube/channel'),
+      fetch('/api/youtube/videos'),
+      fetch('/api/youtube/shorts'),
+      fetch('/api/youtube/live')
     ]);
 
     let newChannel = null;
@@ -208,8 +207,7 @@ export const YouTubeTab: React.FC = () => {
     if (!cachedStr) setError(null);
 
     try {
-      const baseUrl = getBaseUrl();
-      const configRes = await fetch(`${baseUrl}/api/youtube/config`);
+      const configRes = await fetch('/api/youtube/config');
       if (!configRes.ok) throw new Error("Failed to load YouTube setup configuration");
       
       const configContentType = configRes.headers.get("content-type") || "";
@@ -227,10 +225,10 @@ export const YouTubeTab: React.FC = () => {
       }
 
       const [channelRes, videosRes, shortsRes, liveRes] = await Promise.all([
-        fetch(`${baseUrl}/api/youtube/channel`),
-        fetch(`${baseUrl}/api/youtube/videos`),
-        fetch(`${baseUrl}/api/youtube/shorts`),
-        fetch(`${baseUrl}/api/youtube/live`)
+        fetch('/api/youtube/channel'),
+        fetch('/api/youtube/videos'),
+        fetch('/api/youtube/shorts'),
+        fetch('/api/youtube/live')
       ]);
 
       let newChannel = null;

@@ -1072,7 +1072,7 @@ export const StorageManager: React.FC<{ showConfirm?: (title: string, message: s
                         type="text"
                         value={gdriveRedirectUri}
                         onChange={(e) => setGdriveRedirectUri(e.target.value)}
-                        placeholder="http://localhost:3000/oauth"
+                        placeholder="https://titanesp.site/oauth"
                         className="w-full bg-neutral-950/60 border border-white/5 rounded-xl py-2.5 px-3.5 text-xs text-neutral-500 font-mono focus:outline-none"
                         readOnly
                       />

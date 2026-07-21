@@ -295,8 +295,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     setLoadingYt(true);
     setYtTestStatus(null);
     try {
-      const baseUrl = getBaseUrl();
-      const configRes = await fetch(`${baseUrl}/api/youtube/config`);
+      const configRes = await fetch('/api/youtube/config');
       if (configRes.ok) {
         const contentType = configRes.headers.get("content-type") || "";
         if (!contentType.includes("application/json")) {
@@ -324,28 +323,28 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
         }
 
         // Credentials exist, load full details
-        const channelRes = await fetch(`${baseUrl}/api/youtube/channel`);
+        const channelRes = await fetch('/api/youtube/channel');
         if (channelRes.ok && (channelRes.headers.get("content-type") || "").includes("application/json")) {
           try {
             setYtChannelInfo(await channelRes.json());
           } catch (_) {}
         }
         
-        const liveRes = await fetch(`${baseUrl}/api/youtube/live`);
+        const liveRes = await fetch('/api/youtube/live');
         if (liveRes.ok && (liveRes.headers.get("content-type") || "").includes("application/json")) {
           try {
             setYtLiveInfo(await liveRes.json());
           } catch (_) {}
         }
         
-        const videosRes = await fetch(`${baseUrl}/api/youtube/videos`);
+        const videosRes = await fetch('/api/youtube/videos');
         if (videosRes.ok && (videosRes.headers.get("content-type") || "").includes("application/json")) {
           try {
             setYtVideos(await videosRes.json());
           } catch (_) {}
         }
 
-        const shortsRes = await fetch(`${baseUrl}/api/youtube/shorts`);
+        const shortsRes = await fetch('/api/youtube/shorts');
         if (shortsRes.ok && (shortsRes.headers.get("content-type") || "").includes("application/json")) {
           try {
             setYtShorts(await shortsRes.json());
@@ -383,8 +382,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
         throw new Error(`Invalid Channel ID format: Channel ID must be exactly 24 characters (entered ${channelId.trim().length} chars).`);
       }
 
-      const baseUrl = getBaseUrl();
-      const res = await fetch(`${baseUrl}/api/youtube/config`, {
+      const res = await fetch('/api/youtube/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(ytConfig)
@@ -436,8 +434,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
         throw new Error(`Invalid Channel ID format: Channel ID must be exactly 24 characters (entered ${cleanChannel.length} chars).`);
       }
 
-      const baseUrl = getBaseUrl();
-      const testRes = await fetch(`${baseUrl}/api/youtube/test-connection`, {
+      const testRes = await fetch('/api/youtube/test-connection', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ apiKey: cleanKey, channelId: cleanChannel })
@@ -505,8 +502,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
         throw new Error(`Invalid Channel ID format: Channel ID must be exactly 24 characters (entered ${cleanChannel.length} chars).`);
       }
 
-      const baseUrl = getBaseUrl();
-      const connectRes = await fetch(`${baseUrl}/api/youtube/connect`, {
+      const connectRes = await fetch('/api/youtube/connect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ apiKey: cleanKey, channelId: cleanChannel })
@@ -540,8 +536,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     setLoadingYt(true);
     setYtTestStatus(null);
     try {
-      const baseUrl = getBaseUrl();
-      const disconnectRes = await fetch(`${baseUrl}/api/youtube/disconnect`, { method: 'POST' });
+      const disconnectRes = await fetch('/api/youtube/disconnect', { method: 'POST' });
       const contentType = disconnectRes.headers.get("content-type") || "";
       
       if (!contentType.includes("application/json")) {
@@ -576,8 +571,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     setLoadingYt(true);
     setYtTestStatus(null);
     try {
-      const baseUrl = getBaseUrl();
-      const syncRes = await fetch(`${baseUrl}/api/youtube/sync`, { method: 'POST' });
+      const syncRes = await fetch('/api/youtube/sync', { method: 'POST' });
       const contentType = syncRes.headers.get("content-type") || "";
       
       if (!contentType.includes("application/json")) {
