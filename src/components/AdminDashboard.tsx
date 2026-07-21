@@ -384,13 +384,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
         body: JSON.stringify({
           enabled: ytConfig.enabled,
           cacheDurationMinutes: ytConfig.cacheDurationMinutes,
-          autoSync: ytConfig.autoSync
+          autoSync: ytConfig.autoSync,
+          apiKey: ytConfig.apiKey,
+          channelId: ytConfig.channelId
         })
       });
       
       const contentType = res.headers.get("content-type") || "";
       if (!contentType.includes("application/json")) {
-        throw new Error("Server returned an invalid non-JSON response. Please check if the backend is running properly.");
+        const rawText = await res.text();
+        throw new Error(`Server returned non-JSON response (status ${res.status}): ${rawText.substring(0, 150) || "(empty response)"}`);
       }
 
       const data = await res.json();
@@ -422,7 +425,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       });
       const contentType = res.headers.get("content-type") || "";
       if (!contentType.includes("application/json")) {
-        throw new Error("Server returned invalid response format.");
+        const rawText = await res.text();
+        throw new Error(`Server returned non-JSON response (status ${res.status}): ${rawText.substring(0, 150) || "(empty response)"}`);
       }
       const data = await res.json();
       if (res.ok && data.success) {
@@ -468,7 +472,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       });
       const contentType = res.headers.get("content-type") || "";
       if (!contentType.includes("application/json")) {
-        throw new Error("Server returned invalid response format.");
+        const rawText = await res.text();
+        throw new Error(`Server returned non-JSON response (status ${res.status}): ${rawText.substring(0, 150) || "(empty response)"}`);
       }
       const data = await res.json();
       if (res.ok && data.success) {
@@ -503,7 +508,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       const contentType = disconnectRes.headers.get("content-type") || "";
       
       if (!contentType.includes("application/json")) {
-        throw new Error("Server returned an invalid response format (non-JSON).");
+        const rawText = await disconnectRes.text();
+        throw new Error(`Server returned non-JSON response (status ${disconnectRes.status}): ${rawText.substring(0, 150) || "(empty response)"}`);
       }
 
       const data = await disconnectRes.json();
@@ -538,7 +544,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       const contentType = syncRes.headers.get("content-type") || "";
       
       if (!contentType.includes("application/json")) {
-        throw new Error("Server returned an invalid response format (non-JSON).");
+        const rawText = await syncRes.text();
+        throw new Error(`Server returned non-JSON response (status ${syncRes.status}): ${rawText.substring(0, 150) || "(empty response)"}`);
       }
 
       const syncData = await syncRes.json();
@@ -4855,6 +4862,30 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                         checked={ytConfig.enabled}
                         onChange={(e) => setYtConfig({ ...ytConfig, enabled: e.target.checked })}
                         className="w-4 h-4 text-gold-500 bg-neutral-900 border-white/10 rounded cursor-pointer"
+                      />
+                    </div>
+
+                    {/* YouTube API Key */}
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-bold text-neutral-400 uppercase tracking-wide block">YouTube Data API v3 Key</label>
+                      <input 
+                        type="password"
+                        value={ytConfig.apiKey}
+                        onChange={(e) => setYtConfig({ ...ytConfig, apiKey: e.target.value })}
+                        placeholder="e.g. AIzaSy..."
+                        className="w-full bg-neutral-900 border border-white/10 rounded-xl p-2.5 text-xs text-white font-mono placeholder-neutral-600 focus:outline-none focus:border-gold-500/30"
+                      />
+                    </div>
+
+                    {/* YouTube Channel ID */}
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-bold text-neutral-400 uppercase tracking-wide block">YouTube Channel ID</label>
+                      <input 
+                        type="text"
+                        value={ytConfig.channelId}
+                        onChange={(e) => setYtConfig({ ...ytConfig, channelId: e.target.value })}
+                        placeholder="e.g. UCjqzz1w..."
+                        className="w-full bg-neutral-900 border border-white/10 rounded-xl p-2.5 text-xs text-white font-mono placeholder-neutral-600 focus:outline-none focus:border-gold-500/30"
                       />
                     </div>
 

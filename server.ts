@@ -902,7 +902,7 @@ async function startServer() {
   app.post("/api/youtube/config", async (req, res) => {
     logYtModule("REQUEST", "POST /api/youtube/config requested");
     try {
-      const { enabled, cacheDurationMinutes, autoSync } = req.body;
+      const { enabled, cacheDurationMinutes, autoSync, apiKey, channelId } = req.body;
       
       const saved = await getYouTubeConfigSecure();
       
@@ -914,10 +914,27 @@ async function startServer() {
         }
       }
 
+      let finalApiKey = saved.apiKey || "AIzaSyDnjQ1CT7epD61l5dgzGqMxeXAWDUG-dhw";
+      if (apiKey !== undefined && apiKey !== null && apiKey.trim() !== "") {
+        const trimmed = apiKey.trim();
+        if (!trimmed.includes("•")) {
+          finalApiKey = trimmed;
+        }
+      }
+
+      let finalChannelId = saved.channelId || "";
+      if (channelId !== undefined && channelId !== null && channelId.trim() !== "") {
+        finalChannelId = channelId.trim();
+      }
+
+      if (finalApiKey && finalChannelId) {
+        validateCredentials(finalApiKey, finalChannelId);
+      }
+
       const configData: YouTubeConfig = {
         enabled: !!enabled,
-        apiKey: saved.apiKey || "AIzaSyDnjQ1CT7epD61l5dgzGqMxeXAWDUG-dhw",
-        channelId: saved.channelId || "",
+        apiKey: finalApiKey,
+        channelId: finalChannelId,
         cacheDurationMinutes: cacheMinutes,
         autoSync: autoSync ?? true,
         updatedAt: new Date().toISOString()
