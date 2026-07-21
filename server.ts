@@ -246,14 +246,59 @@ async function startServer() {
     return localYouTubeConfig;
   }
 
-  // Helper to make API calls to YouTube
+  // Helper to make API calls to YouTube with robust Google API error parsing
   async function fetchFromYouTube(url: string) {
-    const res = await fetch(url);
-    if (!res.ok) {
-      const errText = await res.text();
-      throw new Error(`YouTube API Error: ${res.status} - ${errText}`);
+    let res;
+    try {
+      res = await fetch(url);
+    } catch (networkErr: any) {
+      throw new Error(`YouTube API Connection Failed: Please verify the server's network connection. Detail: ${networkErr?.message || networkErr}`);
     }
-    return res.json();
+
+    if (!res.ok) {
+      let errText = "";
+      try {
+        errText = await res.text();
+      } catch (_) {}
+
+      let parsedError: any = null;
+      try {
+        parsedError = JSON.parse(errText);
+      } catch (_) {}
+
+      if (parsedError && parsedError.error) {
+        const gError = parsedError.error;
+        const msg = (gError.message || "").toLowerCase();
+        const firstError = gError.errors?.[0] || {};
+        const reason = (firstError.reason || "").toLowerCase();
+
+        if (msg.includes("api key not valid") || msg.includes("keyinvalid") || reason === "keyinvalid") {
+          throw new Error("Invalid YouTube API Key. Please verify your credentials in the Google Cloud Console.");
+        }
+        if (msg.includes("expired") || reason === "expired") {
+          throw new Error("The YouTube API Key has expired. Please generate a new one in the Google Cloud Console.");
+        }
+        if (msg.includes("youtube data api v3 has not been used") || reason === "accessnotconfigured" || reason === "servicedisabled") {
+          throw new Error("YouTube Data API v3 is disabled in your Google Cloud Project. Please enable it in the API Console.");
+        }
+        if (msg.includes("quota") || reason === "quotaexceeded") {
+          throw new Error("YouTube Data API quota exceeded. Please try again later or request a quota increase.");
+        }
+        if (reason === "forbidden" || reason === "unauthorized" || res.status === 403) {
+          throw new Error("Unauthorized access to YouTube API. Please verify your API Key permissions and IP restrictions.");
+        }
+        
+        throw new Error(`YouTube API Error: ${gError.message || res.statusText}`);
+      }
+
+      throw new Error(`YouTube API Error: ${res.status} - ${errText || res.statusText}`);
+    }
+
+    try {
+      return await res.json();
+    } catch (jsonErr: any) {
+      throw new Error(`YouTube API Parsing Failed: Server returned an invalid response. Detail: ${jsonErr?.message || jsonErr}`);
+    }
   }
 
   // Combined caching helper for Videos and Shorts (retrieves uploaded playlist items once)
@@ -337,18 +382,22 @@ async function startServer() {
 
   // 1. Get YouTube config settings (excludes full API Key for security)
   app.get("/api/youtube/config", async (req, res) => {
-    const config = await getYouTubeConfig();
-    if (!config) {
-      return res.json({ enabled: false, channelId: "", hasApiKey: false });
+    try {
+      const config = await getYouTubeConfig();
+      if (!config) {
+        return res.json({ enabled: false, channelId: "", hasApiKey: false });
+      }
+      res.json({
+        enabled: config.enabled ?? false,
+        channelId: config.channelId ?? "",
+        cacheDurationMinutes: config.cacheDurationMinutes ?? 15,
+        autoSync: config.autoSync ?? true,
+        hasApiKey: !!config.apiKey
+      });
+    } catch (err: any) {
+      console.error("Error in app.get(/api/youtube/config):", err);
+      res.status(500).json({ error: err.message || "Internal server error" });
     }
-    res.json({
-      enabled: config.enabled ?? false,
-      channelId: config.channelId ?? "",
-      cacheDurationMinutes: config.cacheDurationMinutes ?? 15,
-      autoSync: config.autoSync ?? true,
-      hasApiKey: !!config.apiKey
-    });
-
   });
 
 
@@ -411,11 +460,16 @@ async function startServer() {
 
   // 3. Clear Cache & Manual Synchronization
   app.post("/api/youtube/sync", async (req, res) => {
-    channelCache = null;
-    videosCache = null;
-    shortsCache = null;
-    liveCache = null;
-    res.json({ success: true, message: "Cache invalidated. Synced metadata successfully!" });
+    try {
+      channelCache = null;
+      videosCache = null;
+      shortsCache = null;
+      liveCache = null;
+      res.json({ success: true, message: "Cache invalidated. Synced metadata successfully!" });
+    } catch (err: any) {
+      console.error("Error in app.post(/api/youtube/sync):", err);
+      res.status(500).json({ error: err.message || "Internal server error" });
+    }
   });
 
 
@@ -437,7 +491,7 @@ async function startServer() {
       const data = await fetchFromYouTube(url);
       
       if (!data.items || data.items.length === 0) {
-        return res.status(404).json({ error: "YouTube Channel not found." });
+        return res.status(404).json({ error: "YouTube Channel ID is invalid or does not exist. Please double-check the ID." });
       }
 
       const item = data.items[0];
@@ -456,10 +510,31 @@ async function startServer() {
         uploadsPlaylistId: item.contentDetails?.relatedPlaylists?.uploads || ""
       };
 
+      // Persist the channel sync details to Firestore database safely
+      if (db) {
+        try {
+          const channelDocRef = doc(db, "appSettings", "youtube_channel");
+          await setDoc(channelDocRef, {
+            apiKey: apiKey || "",
+            channelId: channelInfo.id || "",
+            channelName: channelInfo.title || "",
+            channelUrl: channelInfo.customUrl ? `https://youtube.com/${channelInfo.customUrl}` : `https://youtube.com/channel/${channelInfo.id}`,
+            channelThumbnail: channelInfo.logo || "",
+            subscriberCount: channelInfo.subscribers,
+            videoCount: channelInfo.videosCount,
+            viewCount: channelInfo.views,
+            lastSyncTime: new Date().toISOString()
+          }, { merge: true });
+        } catch (dbErr: any) {
+          console.warn("Failed to persist synced channel stats to Firestore:", dbErr?.message || dbErr);
+        }
+      }
+
       channelCache = { data: channelInfo, timestamp: Date.now() };
       res.json(channelInfo);
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      console.error("Error in app.get(/api/youtube/channel):", err);
+      res.status(500).json({ error: err.message || "Internal server error" });
     }
   });
 
