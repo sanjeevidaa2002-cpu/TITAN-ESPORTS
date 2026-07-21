@@ -371,6 +371,20 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     }
   };
 
+  const safeFetchJson = async (res: Response): Promise<any> => {
+    const contentType = res.headers.get("content-type") || "";
+    if (!contentType.includes("application/json")) {
+      const text = await res.text();
+      if (text.trim().startsWith("<!DOCTYPE html") || text.trim().startsWith("<html")) {
+        const titleMatch = text.match(/<title>([^<]+)<\/title>/i);
+        const serverError = titleMatch ? titleMatch[1] : `HTML Response (HTTP ${res.status})`;
+        throw new Error(`Server error: ${serverError}`);
+      }
+      throw new Error(`Expected JSON but received: ${text.substring(0, 100)}`);
+    }
+    return await res.json();
+  };
+
   const handleImportChannel = async () => {
     if (!ytChannelUrl || ytChannelUrl.trim() === "") {
       alert("Please enter a YouTube Channel URL to import.");
@@ -384,7 +398,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ channelUrl: ytChannelUrl.trim(), userUid: currentUser?.uid })
       });
-      const data = await res.json();
+      const data = await safeFetchJson(res);
       if (res.ok) {
         alert("YouTube channel connected and imported successfully!");
         setYtTestStatus({
