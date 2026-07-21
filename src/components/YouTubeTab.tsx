@@ -123,7 +123,7 @@ export const preloadYouTubeData = async () => {
 
     const configData = await configRes.json();
     
-    if (!configData.enabled || !configData.hasApiKey || !configData.channelId) {
+    if (!configData.enabled || !configData.channelId) {
       isFetchingYT = false;
       return; 
     }
@@ -170,7 +170,7 @@ export const preloadYouTubeData = async () => {
 };
 
 export const YouTubeTab: React.FC = () => {
-  const [config, setConfig] = useState<{ enabled: boolean; hasApiKey: boolean; channelId: string } | null>(null);
+  const [config, setConfig] = useState<{ enabled: boolean; channelId: string } | null>(null);
   const [channel, setChannel] = useState<ChannelInfo | null>(null);
   const [videos, setVideos] = useState<VideoItem[]>([]);
   const [shorts, setShorts] = useState<VideoItem[]>([]);
@@ -235,7 +235,7 @@ export const YouTubeTab: React.FC = () => {
       const configData = await configRes.json();
       setConfig(configData);
 
-      if (!configData.enabled || !configData.hasApiKey || !configData.channelId) {
+      if (!configData.enabled || !configData.channelId) {
         setLoading(false);
         isFetchingYT = false;
         return; 
@@ -368,7 +368,7 @@ export const YouTubeTab: React.FC = () => {
   }
 
   // Integration not configured fallback UI
-  if (!config?.enabled || !config?.hasApiKey || !config?.channelId) {
+  if (!config?.enabled || !config?.channelId) {
     return (
       <div className="space-y-6 pb-24">
         {/* Header Block */}
@@ -832,6 +832,66 @@ export const YouTubeTab: React.FC = () => {
                         >
                           Set Reminder <ExternalLink className="w-2.5 h-2.5" />
                         </a>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* 3C. PAST LIVE STREAMS SECTION */}
+          {liveData && (liveData as any).pastLiveStreams && (liveData as any).pastLiveStreams.length > 0 && (
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <Video className="w-4 h-4 text-neutral-400" />
+                <h3 className="text-[10px] uppercase font-black tracking-widest text-neutral-300 font-mono">Past Broadcasts & Completed Streams</h3>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 font-sans">
+                {(liveData as any).pastLiveStreams.map((stream: any) => (
+                  <div key={stream.id} className="bg-[#111116] border border-white/5 rounded-2xl overflow-hidden hover:border-gold-500/20 hover:shadow-lg transition-all flex flex-col group">
+                    <div className="aspect-video relative overflow-hidden bg-black shrink-0">
+                      {activeEmbedId === stream.id ? (
+                        <iframe 
+                          src={`https://www.youtube.com/embed/${stream.id}?autoplay=1`} 
+                          title={stream.title}
+                          className="w-full h-full border-0 absolute inset-0"
+                          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" 
+                          allowFullScreen
+                        />
+                      ) : (
+                        <>
+                          <img 
+                            src={stream.thumbnail} 
+                            alt={stream.title} 
+                            className="w-full h-full object-cover group-hover:scale-105 transition-all duration-300"
+                            loading="lazy"
+                            referrerPolicy="no-referrer"
+                          />
+                          <div className="absolute inset-0 bg-black/10 group-hover:bg-black/30 transition-all flex items-center justify-center">
+                            <button 
+                              onClick={() => setActiveEmbedId(stream.id)}
+                              className="w-12 h-12 rounded-full bg-red-600 text-white flex items-center justify-center hover:scale-110 active:scale-95 transition-all cursor-pointer shadow-lg group-hover:bg-red-700"
+                            >
+                              <Play className="w-5 h-5 fill-white" />
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                    <div className="p-4 flex-1 flex flex-col justify-between space-y-3">
+                      <div className="space-y-1">
+                        <h4 className="text-xs font-bold text-neutral-100 uppercase tracking-wide group-hover:text-gold-400 transition-colors line-clamp-2 cursor-pointer" onClick={() => setActiveEmbedId(stream.id)}>
+                          {stream.title}
+                        </h4>
+                        <p className="text-[10px] text-neutral-400 line-clamp-2">
+                          {stream.description || 'No description provided.'}
+                        </p>
+                      </div>
+                      <div className="flex items-center justify-between border-t border-white/5 pt-2 text-[9px] font-mono text-neutral-500">
+                        <div className="flex items-center gap-1"><Eye className="w-3 h-3" /> <span>{formatNumber(stream.views)} views</span></div>
+                        <span>{formatPublishedAt(stream.publishedAt)}</span>
                       </div>
                     </div>
                   </div>

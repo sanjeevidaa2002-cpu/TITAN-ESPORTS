@@ -21,7 +21,7 @@ import crypto from "crypto";
 import multer from "multer";
 import { createServer as createViteServer } from "vite";
 import { initializeApp, getApps, getApp } from "firebase/app";
-import { initializeFirestore, doc, getDoc, setDoc, updateDoc, collection, addDoc, getDocs, runTransaction, query, where, getFirestore, setLogLevel } from "firebase/firestore";
+import { initializeFirestore, doc, getDoc, setDoc, updateDoc, collection, addDoc, getDocs, runTransaction, query, where, getFirestore, setLogLevel, deleteDoc } from "firebase/firestore";
 
 // Silence internal SDK logs early
 setLogLevel('silent');
@@ -474,6 +474,7 @@ async function startServer() {
 
       const videoItem = {
         id: v.id,
+        type: isShort ? "short" : "video",
         title: v.snippet?.title || "",
         description: v.snippet?.description || "",
         publishedAt: v.snippet?.publishedAt || "",
@@ -482,7 +483,9 @@ async function startServer() {
         durationSeconds: seconds,
         views: parseInt(v.statistics?.viewCount, 10) || 0,
         likes: parseInt(v.statistics?.likeCount, 10) || 0,
-        comments: parseInt(v.statistics?.commentCount, 10) || 0
+        comments: parseInt(v.statistics?.commentCount, 10) || 0,
+        videoUrl: isShort ? `https://youtube.com/shorts/${v.id}` : `https://youtube.com/watch?v=${v.id}`,
+        embedUrl: `https://www.youtube.com/embed/${v.id}`
       };
 
       if (isShort) {
@@ -546,8 +549,64 @@ async function startServer() {
     return {
       isLive: !!activeLive,
       activeLive,
-      upcomingStreams
+      upcomingStreams,
+      pastLiveStreams: [] as any[]
     };
+  }
+
+  // Fetch completed past live streams
+  async function fetchCompletedLiveStreamsFromAPI(apiKey: string, channelId: string) {
+    const completedUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channelId}&type=video&eventType=completed&maxResults=20&key=${apiKey}`;
+    try {
+      const data = await fetchGoogleAPI(completedUrl);
+      const items = data.items || [];
+      if (items.length === 0) return [];
+      
+      const videoIds = items.map((item: any) => item.id?.videoId).filter(Boolean);
+      if (videoIds.length === 0) return [];
+
+      const detailsUrl = `https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics&id=${videoIds.join(",")}&key=${apiKey}`;
+      const detailsData = await fetchGoogleAPI(detailsUrl);
+      const detailedVideos = detailsData.items || [];
+
+      return detailedVideos.map((v: any) => {
+        const durationStr = v.contentDetails?.duration || "";
+        const seconds = parseDurationToSeconds(durationStr);
+        return {
+          id: v.id,
+          type: "live",
+          title: v.snippet?.title || "",
+          description: v.snippet?.description || "",
+          publishedAt: v.snippet?.publishedAt || "",
+          thumbnail: v.snippet?.thumbnails?.maxres?.url || v.snippet?.thumbnails?.high?.url || v.snippet?.thumbnails?.medium?.url || v.snippet?.thumbnails?.default?.url || "",
+          duration: durationStr,
+          durationSeconds: seconds,
+          views: parseInt(v.statistics?.viewCount, 10) || 0,
+          likes: parseInt(v.statistics?.likeCount, 10) || 0,
+          comments: parseInt(v.statistics?.commentCount, 10) || 0,
+          videoUrl: `https://youtube.com/watch?v=${v.id}`,
+          embedUrl: `https://www.youtube.com/embed/${v.id}`
+        };
+      });
+    } catch (err: any) {
+      logYtModule("ERROR", `Failed to fetch completed live streams: ${err.message}`);
+      return [];
+    }
+  }
+
+  // Save imported video/shorts/live items to Firestore to prevent duplicates
+  async function saveItemsToDb(items: any[]) {
+    if (!db || items.length === 0) return;
+    logYtModule("DATABASE", `Saving ${items.length} items to database...`);
+    try {
+      for (const item of items) {
+        const docRef = doc(db, "youtube_videos", item.id);
+        await setDoc(docRef, item, { merge: true });
+      }
+      logYtModule("DATABASE", `Successfully saved ${items.length} items to database.`);
+    } catch (err: any) {
+      logYtModule("ERROR", `Failed to save items to database: ${err.message}`);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -765,12 +824,37 @@ async function startServer() {
       let syncedVideos: any[] = [];
       let syncedShorts: any[] = [];
       let syncedLive: any = null;
+      let completedLive: any[] = [];
 
       try {
         const syncItems = await fetchVideosAndShortsFromAPI(apiKey, channelData.uploadsPlaylistId);
         syncedVideos = syncItems.videos;
         syncedShorts = syncItems.shorts;
+        
         syncedLive = await fetchLiveStatusFromAPI(apiKey, rawChannel.id);
+        completedLive = await fetchCompletedLiveStreamsFromAPI(apiKey, rawChannel.id);
+        syncedLive.pastLiveStreams = completedLive;
+
+        // Save all items to database to prevent duplicate imports
+        const allItems = [...syncedVideos, ...syncedShorts, ...completedLive];
+        if (syncedLive.activeLive) {
+          allItems.push({
+            ...syncedLive.activeLive,
+            type: "active",
+            videoUrl: `https://youtube.com/watch?v=${syncedLive.activeLive.id}`,
+            embedUrl: `https://www.youtube.com/embed/${syncedLive.activeLive.id}`
+          });
+        }
+        for (const up of (syncedLive.upcomingStreams || [])) {
+          allItems.push({
+            ...up,
+            type: "upcoming",
+            videoUrl: `https://youtube.com/watch?v=${up.id}`,
+            embedUrl: `https://www.youtube.com/embed/${up.id}`
+          });
+        }
+
+        await saveItemsToDb(allItems);
       } catch (syncErr: any) {
         logYtModule("ERROR", `Import deep item sync hit transient error: ${syncErr.message}`);
       }
@@ -818,20 +902,10 @@ async function startServer() {
   app.post("/api/youtube/config", async (req, res) => {
     logYtModule("REQUEST", "POST /api/youtube/config requested");
     try {
-      const { enabled, apiKey, channelId, cacheDurationMinutes, autoSync } = req.body;
+      const { enabled, cacheDurationMinutes, autoSync } = req.body;
       
       const saved = await getYouTubeConfigSecure();
-      let finalApiKey = apiKey;
-      if (!apiKey || apiKey === "••••••••" || apiKey.includes("••••") || apiKey.trim() === "") {
-        finalApiKey = saved.apiKey || "AIzaSyDnjQ1CT7epD61l5dgzGqMxeXAWDUG-dhw";
-      }
-      let finalChannelId = channelId;
-      if (!channelId || channelId.trim() === "") {
-        finalChannelId = saved.channelId || "UCjqzz1wYC3zdpLEHVxjcTEQ";
-      }
-
-      validateCredentials(finalApiKey, finalChannelId);
-
+      
       let cacheMinutes = 15;
       if (cacheDurationMinutes !== undefined && cacheDurationMinutes !== null) {
         const parsed = parseInt(String(cacheDurationMinutes), 10);
@@ -842,8 +916,8 @@ async function startServer() {
 
       const configData: YouTubeConfig = {
         enabled: !!enabled,
-        apiKey: finalApiKey,
-        channelId: finalChannelId,
+        apiKey: saved.apiKey || "AIzaSyDnjQ1CT7epD61l5dgzGqMxeXAWDUG-dhw",
+        channelId: saved.channelId || "",
         cacheDurationMinutes: cacheMinutes,
         autoSync: autoSync ?? true,
         updatedAt: new Date().toISOString()
@@ -854,7 +928,7 @@ async function startServer() {
       if (db) {
         const docRef = doc(db, "appSettings", "youtube");
         await setDoc(docRef, configData);
-        logYtModule("DATABASE", "Successfully saved validated YouTube settings to Firestore.");
+        logYtModule("DATABASE", "Successfully saved YouTube settings to Firestore.");
       }
 
       // Clear memory caches on settings change to force reload
@@ -873,168 +947,13 @@ async function startServer() {
     }
   });
 
-  // 3. Test Connection without saving (OR AUTOMATICALLY SAVES/SYNCS IF SUCCESSFUL)
-  app.post("/api/youtube/test-connection", async (req, res) => {
-    logYtModule("REQUEST", "POST /api/youtube/test-connection requested");
-    try {
-      const { apiKey, channelId } = req.body;
-      let testApiKey = apiKey;
-      let testChannelId = channelId;
-
-      if (!testApiKey || testApiKey === "••••••••" || testApiKey.includes("••••")) {
-        const saved = await getYouTubeConfigSecure();
-        testApiKey = saved.apiKey;
-      }
-      if (!testChannelId) {
-        const saved = await getYouTubeConfigSecure();
-        testChannelId = saved.channelId;
-      }
-
-      validateCredentials(testApiKey, testChannelId);
-
-      logYtModule("PROXY", `Verifying connection with Channel ID: ${testChannelId}`);
-      const channelDetails = await fetchChannelDetails(testApiKey, testChannelId);
-      logYtModule("PROXY", `Connection verified! Linked channel: ${channelDetails.channelName}`);
-      
-      // REQUIREMENT 12: On successful verification, save configuration, sync channel, and clear cache!
-      const configData: YouTubeConfig = {
-        enabled: true,
-        apiKey: testApiKey.trim(),
-        channelId: testChannelId.trim(),
-        cacheDurationMinutes: localYouTubeConfig.cacheDurationMinutes || 15,
-        autoSync: localYouTubeConfig.autoSync ?? true,
-        updatedAt: new Date().toISOString()
-      };
-
-      localYouTubeConfig = configData;
-      if (db) {
-        const docRef = doc(db, "appSettings", "youtube");
-        await setDoc(docRef, configData);
-        logYtModule("DATABASE", "Successfully saved validated YouTube settings to Firestore via Test Connection.");
-      }
-
-      // Save synced details to Firestore
-      await saveChannelDetailsToDb(channelDetails);
-
-      // Perform a full sync immediately of videos and live stream
-      let syncedVideos: any[] = [];
-      let syncedShorts: any[] = [];
-      let syncedLive: any = null;
-
-      try {
-        const syncItems = await fetchVideosAndShortsFromAPI(testApiKey, channelDetails.uploadsPlaylistId);
-        syncedVideos = syncItems.videos;
-        syncedShorts = syncItems.shorts;
-        syncedLive = await fetchLiveStatusFromAPI(testApiKey, testChannelId);
-      } catch (syncErr: any) {
-        logYtModule("ERROR", `Metadata sync following test connection hit a transient error: ${syncErr.message}`);
-      }
-
-      // Sync into memory cache
-      ytChannelCache = channelDetails;
-      ytVideosCache = syncedVideos;
-      ytShortsCache = syncedShorts;
-      ytLiveCache = syncedLive;
-      ytCacheTimestamp = Date.now();
-      ytLiveCacheTimestamp = Date.now();
-
-      logYtModule("RESPONSE", "POST /api/youtube/test-connection successfully completed.");
-      return helperResponseJson(res, 200, {
-        success: true,
-        message: `Successfully connected to channel: ${channelDetails.channelName}! Configuration saved and synchronized immediately.`,
-        channel: {
-          id: channelDetails.channelId,
-          title: channelDetails.channelName,
-          thumbnail: channelDetails.profileImage,
-          subscriberCount: channelDetails.subscriberCount,
-          videoCount: channelDetails.videoCount,
-          viewCount: channelDetails.viewCount,
-          country: channelDetails.country
-        }
-      });
-    } catch (err: any) {
-      logYtModule("RESPONSE", `POST /api/youtube/test-connection failed: ${err.message}`);
-      return helperResponseJson(res, 400, {
-        success: false,
-        error: err.message || "Connection verification failed."
-      });
-    }
-  });
-
-  // 4. Connect Channel
-  app.post("/api/youtube/connect", async (req, res) => {
-    logYtModule("REQUEST", "POST /api/youtube/connect requested");
-    try {
-      const { apiKey, channelId } = req.body;
-      validateCredentials(apiKey, channelId);
-
-      const channelData = await fetchChannelDetails(apiKey, channelId);
-      
-      const configData: YouTubeConfig = {
-        enabled: true,
-        apiKey: apiKey.trim(),
-        channelId: channelId.trim(),
-        cacheDurationMinutes: 15,
-        autoSync: true,
-        updatedAt: new Date().toISOString()
-      };
-
-      localYouTubeConfig = configData;
-      if (db) {
-        const docRef = doc(db, "appSettings", "youtube");
-        await setDoc(docRef, configData);
-      }
-
-      await saveChannelDetailsToDb(channelData);
-
-      // Perform deep sync on connection
-      let syncedVideos: any[] = [];
-      let syncedShorts: any[] = [];
-      let syncedLive: any = null;
-
-      try {
-        const syncItems = await fetchVideosAndShortsFromAPI(apiKey, channelData.uploadsPlaylistId);
-        syncedVideos = syncItems.videos;
-        syncedShorts = syncItems.shorts;
-        syncedLive = await fetchLiveStatusFromAPI(apiKey, channelId);
-      } catch (syncErr: any) {
-        logYtModule("ERROR", `Connection sync hit transient error: ${syncErr.message}`);
-      }
-
-      // Save initial sync data into local memory cache
-      ytChannelCache = channelData;
-      ytVideosCache = syncedVideos;
-      ytShortsCache = syncedShorts;
-      ytLiveCache = syncedLive;
-      ytCacheTimestamp = Date.now();
-      ytLiveCacheTimestamp = Date.now();
-
-      logYtModule("RESPONSE", "POST /api/youtube/connect successfully completed.");
-      return helperResponseJson(res, 200, {
-        success: true,
-        message: "YouTube channel connected successfully!",
-        channel: {
-          id: channelData.channelId,
-          title: channelData.channelName,
-          thumbnail: channelData.profileImage,
-          subscriberCount: channelData.subscriberCount,
-          videoCount: channelData.videoCount,
-          viewCount: channelData.viewCount
-        }
-      });
-    } catch (err: any) {
-      logYtModule("RESPONSE", `POST /api/youtube/connect failed: ${err.message}`);
-      return helperResponseJson(res, 400, { success: false, error: err.message || "Failed to connect YouTube channel." });
-    }
-  });
-
-  // 5. Disconnect Channel
+  // 3. Disconnect Channel
   app.post("/api/youtube/disconnect", async (req, res) => {
     logYtModule("REQUEST", "POST /api/youtube/disconnect requested");
     try {
       const configData: YouTubeConfig = {
         enabled: false,
-        apiKey: "",
+        apiKey: "AIzaSyDnjQ1CT7epD61l5dgzGqMxeXAWDUG-dhw",
         channelId: "",
         cacheDurationMinutes: 15,
         autoSync: true,
@@ -1063,6 +982,18 @@ async function startServer() {
           publishedAt: "",
           lastUpdated: new Date().toISOString()
         });
+
+        // Clean up imported videos collection
+        try {
+          const q = query(collection(db, "youtube_videos"));
+          const snap = await getDocs(q);
+          for (const docSnap of snap.docs) {
+            await deleteDoc(doc(db, "youtube_videos", docSnap.id));
+          }
+          logYtModule("DATABASE", "Successfully cleared all imported videos from Firestore.");
+        } catch (dbErr: any) {
+          logYtModule("ERROR", `Failed to clear videos from Firestore: ${dbErr.message}`);
+        }
       }
 
       // Invalidate memory caches
@@ -1074,20 +1005,20 @@ async function startServer() {
       ytLiveCacheTimestamp = 0;
 
       logYtModule("RESPONSE", "POST /api/youtube/disconnect successfully completed.");
-      return helperResponseJson(res, 200, { success: true, message: "YouTube integration disconnected successfully." });
+      return helperResponseJson(res, 200, { success: true, message: "YouTube channel disconnected and data cleared successfully." });
     } catch (err: any) {
       logYtModule("RESPONSE", `POST /api/youtube/disconnect failed: ${err.message}`);
       return helperResponseJson(res, 500, { success: false, error: err.message || "Failed to disconnect channel." });
     }
   });
 
-  // 6. Sync Now
+  // 4. Sync Now
   app.post("/api/youtube/sync", async (req, res) => {
     logYtModule("REQUEST", "POST /api/youtube/sync requested");
     try {
       const config = await getYouTubeConfigSecure();
       if (!config.enabled || !config.apiKey || !config.channelId) {
-        return helperResponseJson(res, 400, { success: false, error: "YouTube Integration is disconnected. Configure credentials in the Admin Panel." });
+        return helperResponseJson(res, 400, { success: false, error: "YouTube Integration is disconnected. Configure a channel in the Admin Panel." });
       }
 
       const freshChannel = await fetchChannelDetails(config.apiKey, config.channelId);
@@ -1095,8 +1026,31 @@ async function startServer() {
 
       const { videos, shorts } = await fetchVideosAndShortsFromAPI(config.apiKey, freshChannel.uploadsPlaylistId);
       const liveData = await fetchLiveStatusFromAPI(config.apiKey, config.channelId);
+      const completedLive = await fetchCompletedLiveStreamsFromAPI(config.apiKey, config.channelId);
+      liveData.pastLiveStreams = completedLive;
 
-      // Cache all synchronized outputs
+      // Save all items to Firestore
+      const allItems = [...videos, ...shorts, ...completedLive];
+      if (liveData.activeLive) {
+        allItems.push({
+          ...liveData.activeLive,
+          type: "active",
+          videoUrl: `https://youtube.com/watch?v=${liveData.activeLive.id}`,
+          embedUrl: `https://www.youtube.com/embed/${liveData.activeLive.id}`
+        });
+      }
+      for (const up of (liveData.upcomingStreams || [])) {
+        allItems.push({
+          ...up,
+          type: "upcoming",
+          videoUrl: `https://youtube.com/watch?v=${up.id}`,
+          embedUrl: `https://www.youtube.com/embed/${up.id}`
+        });
+      }
+
+      await saveItemsToDb(allItems);
+
+      // Cache all synchronized outputs in memory
       ytChannelCache = freshChannel;
       ytVideosCache = videos;
       ytShortsCache = shorts;
@@ -1112,7 +1066,7 @@ async function startServer() {
     }
   });
 
-  // 7. Get Channel Profile details
+  // 5. Get Channel Profile details (with DB fallback)
   app.get("/api/youtube/channel", async (req, res) => {
     logYtModule("REQUEST", "GET /api/youtube/channel requested");
     try {
@@ -1125,6 +1079,22 @@ async function startServer() {
       if (ytChannelCache && (Date.now() - ytCacheTimestamp < cacheExpiry)) {
         logYtModule("PROXY", "Serving channel data from memory cache.");
         return helperResponseJson(res, 200, formatChannelForUI(ytChannelCache));
+      }
+
+      // DB Fallback
+      if (db && !ytChannelCache) {
+        logYtModule("DATABASE", "Retrieving channel data from Firestore Fallback...");
+        try {
+          const docSnap = await getDoc(doc(db, "appSettings", "youtube_channel"));
+          if (docSnap.exists()) {
+            ytChannelCache = docSnap.data();
+            ytCacheTimestamp = Date.now();
+            logYtModule("DATABASE", "Serving channel details from Firestore Fallback successfully.");
+            return helperResponseJson(res, 200, formatChannelForUI(ytChannelCache));
+          }
+        } catch (dbErr: any) {
+          logYtModule("ERROR", `Channel database fallback failed: ${dbErr.message}`);
+        }
       }
 
       logYtModule("PROXY", "Channel cache missing or expired. Fetching fresh from Google APIs...");
@@ -1142,7 +1112,7 @@ async function startServer() {
     }
   });
 
-  // 8. Get Videos
+  // 6. Get Videos (with DB fallback)
   app.get("/api/youtube/videos", async (req, res) => {
     logYtModule("REQUEST", "GET /api/youtube/videos requested");
     try {
@@ -1155,6 +1125,27 @@ async function startServer() {
       if (ytChannelCache && ytVideosCache.length > 0 && (Date.now() - ytCacheTimestamp < cacheExpiry)) {
         logYtModule("PROXY", "Serving videos from memory cache.");
         return helperResponseJson(res, 200, ytVideosCache);
+      }
+
+      // DB Fallback
+      if (db && ytVideosCache.length === 0) {
+        logYtModule("DATABASE", "Retrieving videos from Firestore database...");
+        try {
+          const q = query(collection(db, "youtube_videos"), where("type", "==", "video"));
+          const snap = await getDocs(q);
+          const items: any[] = [];
+          snap.forEach(docSnap => {
+            items.push(docSnap.data());
+          });
+          if (items.length > 0) {
+            items.sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
+            ytVideosCache = items;
+            logYtModule("DATABASE", `Loaded ${items.length} videos from Firestore successfully.`);
+            return helperResponseJson(res, 200, ytVideosCache);
+          }
+        } catch (dbErr: any) {
+          logYtModule("ERROR", `Failed to retrieve videos from Firestore fallback: ${dbErr.message}`);
+        }
       }
 
       logYtModule("PROXY", "Videos cache missing or expired. Fetching fresh from Google APIs...");
@@ -1172,6 +1163,9 @@ async function startServer() {
       ytShortsCache = shorts;
       ytCacheTimestamp = Date.now();
 
+      // Save them all in background
+      await saveItemsToDb([...videos, ...shorts]);
+
       logYtModule("RESPONSE", "GET /api/youtube/videos successfully completed.");
       return helperResponseJson(res, 200, ytVideosCache);
     } catch (err: any) {
@@ -1180,7 +1174,7 @@ async function startServer() {
     }
   });
 
-  // 9. Get Shorts
+  // 7. Get Shorts (with DB fallback)
   app.get("/api/youtube/shorts", async (req, res) => {
     logYtModule("REQUEST", "GET /api/youtube/shorts requested");
     try {
@@ -1193,6 +1187,27 @@ async function startServer() {
       if (ytChannelCache && ytShortsCache.length > 0 && (Date.now() - ytCacheTimestamp < cacheExpiry)) {
         logYtModule("PROXY", "Serving shorts from memory cache.");
         return helperResponseJson(res, 200, ytShortsCache);
+      }
+
+      // DB Fallback
+      if (db && ytShortsCache.length === 0) {
+        logYtModule("DATABASE", "Retrieving shorts from Firestore database...");
+        try {
+          const q = query(collection(db, "youtube_videos"), where("type", "==", "short"));
+          const snap = await getDocs(q);
+          const items: any[] = [];
+          snap.forEach(docSnap => {
+            items.push(docSnap.data());
+          });
+          if (items.length > 0) {
+            items.sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
+            ytShortsCache = items;
+            logYtModule("DATABASE", `Loaded ${items.length} shorts from Firestore successfully.`);
+            return helperResponseJson(res, 200, ytShortsCache);
+          }
+        } catch (dbErr: any) {
+          logYtModule("ERROR", `Failed to retrieve shorts from Firestore: ${dbErr.message}`);
+        }
       }
 
       logYtModule("PROXY", "Shorts cache missing or expired. Fetching fresh from Google APIs...");
@@ -1210,6 +1225,8 @@ async function startServer() {
       ytShortsCache = shorts;
       ytCacheTimestamp = Date.now();
 
+      await saveItemsToDb([...videos, ...shorts]);
+
       logYtModule("RESPONSE", "GET /api/youtube/shorts successfully completed.");
       return helperResponseJson(res, 200, ytShortsCache);
     } catch (err: any) {
@@ -1218,7 +1235,7 @@ async function startServer() {
     }
   });
 
-  // 10. Get Live broadcast status
+  // 8. Get Live broadcast status (with DB fallback)
   app.get("/api/youtube/live", async (req, res) => {
     logYtModule("REQUEST", "GET /api/youtube/live requested");
     try {
@@ -1233,10 +1250,76 @@ async function startServer() {
         return helperResponseJson(res, 200, ytLiveCache);
       }
 
+      // DB Fallback
+      if (db && !ytLiveCache) {
+        logYtModule("DATABASE", "Retrieving live status from Firestore database...");
+        try {
+          // Fetch active
+          const qActive = query(collection(db, "youtube_videos"), where("type", "==", "active"));
+          const snapActive = await getDocs(qActive);
+          let activeLive: any = null;
+          if (!snapActive.empty) {
+            activeLive = snapActive.docs[0].data();
+          }
+
+          // Fetch upcoming
+          const qUpcoming = query(collection(db, "youtube_videos"), where("type", "==", "upcoming"));
+          const snapUpcoming = await getDocs(qUpcoming);
+          const upcomingStreams: any[] = [];
+          snapUpcoming.forEach(d => upcomingStreams.push(d.data()));
+
+          // Fetch past live streams
+          const qPast = query(collection(db, "youtube_videos"), where("type", "==", "live"));
+          const snapPast = await getDocs(qPast);
+          const pastLiveStreams: any[] = [];
+          snapPast.forEach(d => pastLiveStreams.push(d.data()));
+
+          if (activeLive || upcomingStreams.length > 0 || pastLiveStreams.length > 0) {
+            pastLiveStreams.sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
+            upcomingStreams.sort((a, b) => new Date(a.publishedAt).getTime() - new Date(b.publishedAt).getTime());
+            
+            ytLiveCache = {
+              isLive: !!activeLive,
+              activeLive,
+              upcomingStreams,
+              pastLiveStreams
+            };
+            ytLiveCacheTimestamp = Date.now();
+            logYtModule("DATABASE", "Successfully served live streams from Firestore fallback.");
+            return helperResponseJson(res, 200, ytLiveCache);
+          }
+        } catch (dbErr: any) {
+          logYtModule("ERROR", `Failed to load live fallback from DB: ${dbErr.message}`);
+        }
+      }
+
       logYtModule("PROXY", "Live broadcast status cache missing or expired. Fetching fresh from Google APIs...");
       const liveData = await fetchLiveStatusFromAPI(config.apiKey, config.channelId);
+      const completedLive = await fetchCompletedLiveStreamsFromAPI(config.apiKey, config.channelId);
+      liveData.pastLiveStreams = completedLive;
+      
       ytLiveCache = liveData;
       ytLiveCacheTimestamp = Date.now();
+
+      // Save them to DB
+      const allItems = [...completedLive];
+      if (liveData.activeLive) {
+        allItems.push({
+          ...liveData.activeLive,
+          type: "active",
+          videoUrl: `https://youtube.com/watch?v=${liveData.activeLive.id}`,
+          embedUrl: `https://www.youtube.com/embed/${liveData.activeLive.id}`
+        });
+      }
+      for (const up of (liveData.upcomingStreams || [])) {
+        allItems.push({
+          ...up,
+          type: "upcoming",
+          videoUrl: `https://youtube.com/watch?v=${up.id}`,
+          embedUrl: `https://www.youtube.com/embed/${up.id}`
+        });
+      }
+      await saveItemsToDb(allItems);
 
       logYtModule("RESPONSE", "GET /api/youtube/live successfully completed.");
       return helperResponseJson(res, 200, liveData);
