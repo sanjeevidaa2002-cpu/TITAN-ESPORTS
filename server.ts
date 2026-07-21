@@ -80,20 +80,12 @@ async function verifyAdminRole(userUid: string): Promise<boolean> {
 
 interface YouTubeConfig {
   enabled: boolean;
-  apiKey: string;
-  channelId: string;
-  cacheDurationMinutes: number;
-  autoSync: boolean;
   updatedAt: string;
 }
 
 // Local memory fallback store in case Firestore Admin SDK hits ACCESS_LIMITS or other issues.
 let localYouTubeConfig: YouTubeConfig = {
   enabled: true,
-  apiKey: "AIzaSyDnjQ1CT7epD61l5dgzGqMxeXAWDUG-dhw",
-  channelId: "UCjqzz1wYC3zdpLEHVxjcTEQ",
-  cacheDurationMinutes: 15,
-  autoSync: true,
   updatedAt: new Date().toISOString()
 };
 
@@ -104,10 +96,6 @@ async function bootstrapYouTubeConfig() {
       const docRef = doc(db, "appSettings", "youtube");
       await setDoc(docRef, {
         enabled: true,
-        apiKey: "AIzaSyDnjQ1CT7epD61l5dgzGqMxeXAWDUG-dhw",
-        channelId: "UCjqzz1wYC3zdpLEHVxjcTEQ",
-        cacheDurationMinutes: 15,
-        autoSync: true,
         updatedAt: new Date().toISOString()
       }, { merge: true });
       console.log("YouTube Config bootstrapped successfully to Firestore!");
@@ -213,1141 +201,729 @@ async function startServer() {
   });
 
   // =========================================================================
-  // REBUILT YOUTUBE INTEGRATION MODULE
+  // MANUAL YOUTUBE MANAGEMENT SYSTEM
   // =========================================================================
-
-  // Rebuilt Logger following comprehensive error logging requirements
-  function logYtModule(
-    type: "REQUEST" | "RESPONSE" | "GOOGLE_API" | "DATABASE" | "PROXY" | "AUTH" | "ERROR",
-    message: string,
-    details?: any
-  ) {
-    const timestamp = new Date().toISOString();
-    console.log(`[YT_REBUILT] [${timestamp}] [${type}] ${message}`, details ? JSON.stringify(details) : "");
-  }
-
-  // Memory cache store
-  let ytChannelCache: any = null;
-  let ytVideosCache: any[] = [];
-  let ytShortsCache: any[] = [];
-  let ytLiveCache: any = null;
-  let ytCacheTimestamp = 0;
-  let ytLiveCacheTimestamp = 0;
-
-  // Helper to parse ISO 8601 duration string (e.g. PT12M30S) to duration in seconds
-  function parseDurationToSeconds(duration: string): number {
-    const match = duration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
-    if (!match) return 0;
-    const hours = parseInt(match[1] || '0', 10);
-    const minutes = parseInt(match[2] || '0', 10);
-    const seconds = parseInt(match[3] || '0', 10);
-    return hours * 3600 + minutes * 60 + seconds;
-  }
-
-  // Helper to retrieve saved config from Firestore or fallback to in-memory store
-  async function getYouTubeConfigSecure(): Promise<YouTubeConfig> {
-    try {
-      logYtModule("DATABASE", "Retrieving YouTube configuration from database...");
-      if (db) {
-        const docRef = doc(db, "appSettings", "youtube");
-        const docSnap = await getDoc(docRef);
-        if (docSnap.exists()) {
-          const dbData = docSnap.data() as Partial<YouTubeConfig>;
-          if (dbData) {
-            localYouTubeConfig = {
-              enabled: dbData.enabled ?? localYouTubeConfig.enabled,
-              apiKey: dbData.apiKey ?? localYouTubeConfig.apiKey,
-              channelId: dbData.channelId ?? localYouTubeConfig.channelId,
-              cacheDurationMinutes: dbData.cacheDurationMinutes ?? localYouTubeConfig.cacheDurationMinutes,
-              autoSync: dbData.autoSync ?? localYouTubeConfig.autoSync,
-              updatedAt: dbData.updatedAt ?? localYouTubeConfig.updatedAt,
-            };
-            logYtModule("DATABASE", "Successfully synchronized YouTube settings from database.");
-          }
-        } else {
-          logYtModule("DATABASE", "No settings found in database. Using in-memory configuration.");
-        }
-      } else {
-        logYtModule("DATABASE", "Firestore is currently unavailable. Using in-memory configuration.");
-      }
-    } catch (err: any) {
-      logYtModule("DATABASE", `Failed to load YouTube config from database: ${err.message}`);
-    }
-    return localYouTubeConfig;
-  }
-
-  // Strict validator for API Key & Channel ID
-  function validateCredentials(apiKey: string, channelId: string) {
-    logYtModule("AUTH", "Validating credentials format...");
-    if (!apiKey || typeof apiKey !== "string" || apiKey.trim() === "") {
-      throw new Error("Missing API Key: YouTube Data API v3 Key is required.");
-    }
-    if (!channelId || typeof channelId !== "string" || channelId.trim() === "") {
-      throw new Error("Missing Channel ID: YouTube Channel ID is required.");
-    }
-
-    const cleanKey = apiKey.trim();
-    const cleanChannel = channelId.trim();
-
-    // Check key format (skip check if it is masked)
-    if (cleanKey !== "••••••••" && !cleanKey.includes("••••") && !cleanKey.startsWith("AIzaSy")) {
-      throw new Error("Invalid API Key: A valid Google Cloud API key must begin with the 'AIzaSy' prefix.");
-    }
-
-    // Check channel ID prefix
-    if (!cleanChannel.startsWith("UC")) {
-      throw new Error("Invalid Channel ID: YouTube channel IDs must start with the 'UC' prefix.");
-    }
-
-    // Check channel ID length
-    if (cleanChannel.length !== 24) {
-      throw new Error(`Invalid Channel ID: YouTube channel IDs must be exactly 24 characters long.`);
-    }
-    logYtModule("AUTH", "Credentials format validation succeeded.");
-  }
-
-  // Wrapped fetch for Google APIs to handle and map all YouTube-specific errors
-  async function fetchGoogleAPI(url: string) {
-    const maskedUrl = url.replace(/key=[^&]+/, "key=REDACTED");
-    logYtModule("GOOGLE_API", `Dispatching request to Google: ${maskedUrl}`);
-
-    let response;
-    try {
-      response = await fetch(url);
-    } catch (netErr: any) {
-      logYtModule("ERROR", `Network connection failure reaching Google servers: ${netErr.message}`);
-      throw new Error("Network connection failed: Google API is unreachable.");
-    }
-
-    const rawText = await response.text();
-    logYtModule("GOOGLE_API", `Google responded with status code: ${response.status}`);
-
-    let parsedData: any;
-    try {
-      parsedData = JSON.parse(rawText);
-      logYtModule("PROXY", "Successfully parsed Google API JSON response.");
-    } catch (parseErr: any) {
-      logYtModule("ERROR", `Unable to parse Google response as JSON. Raw preview: ${rawText.substring(0, 150)}`);
-      throw new Error("Invalid JSON response: The Google server returned an invalid, non-JSON response payload.");
-    }
-
-    if (!response.ok) {
-      const googleError = parsedData?.error;
-      const message = (googleError?.message || "").toLowerCase();
-      const firstError = googleError?.errors?.[0] || {};
-      const reason = (firstError.reason || "").toLowerCase();
-
-      logYtModule("ERROR", `Google API Error - Status: ${response.status}, Reason: ${reason}, Message: ${googleError?.message}`);
-
-      if (message.includes("api key not valid") || reason === "keyinvalid" || (response.status === 400 && message.includes("key"))) {
-        throw new Error("Invalid API Key: The specified YouTube Data API v3 Key is invalid or restricted.");
-      }
-      if (message.includes("expired") || reason === "expired") {
-        throw new Error("Expired API Key: The Google API Key used for this request has expired.");
-      }
-      if (reason === "accessnotconfigured" || reason === "servicedisabled" || message.includes("has not been used in project") || message.includes("disabled")) {
-        throw new Error("YouTube Data API v3 is disabled: Please enable the YouTube Data API v3 in your Google Cloud Project Console.");
-      }
-      if (reason === "quotaexceeded" || message.includes("quota") || (response.status === 403 && message.includes("quota"))) {
-        throw new Error("API quota exceeded: The YouTube Data API v3 daily quota limit is exhausted. Try again later.");
-      }
-      if (reason === "forbidden" || reason === "unauthorized" || response.status === 403 || response.status === 401) {
-        throw new Error("Unauthorized request: Google API access forbidden. Check key restrictions or channel privacy settings.");
-      }
-
-      throw new Error(`Google API Error: ${googleError?.message || response.statusText || "Request failed"}`);
-    }
-
-    return parsedData;
-  }
-
-  function formatChannelForUI(channelData: any) {
-    if (!channelData) return null;
-    return {
-      ...channelData,
-      id: channelData.channelId || channelData.id || "",
-      title: channelData.channelName || channelData.title || "TITAN ESP",
-      description: channelData.description || "",
-      customUrl: channelData.channelHandle || channelData.customUrl || "",
-      publishedAt: channelData.publishedAt || "",
-      country: channelData.country || "Global",
-      logo: channelData.profileImage || channelData.logo || "",
-      banner: channelData.bannerImage || channelData.banner || "",
-      subscribers: typeof channelData.subscriberCount !== 'undefined' ? Number(channelData.subscriberCount) : (Number(channelData.subscribers) || 0),
-      views: typeof channelData.viewCount !== 'undefined' ? Number(channelData.viewCount) : (Number(channelData.views) || 0),
-      videosCount: typeof channelData.videoCount !== 'undefined' ? Number(channelData.videoCount) : (Number(channelData.videosCount) || 0)
-    };
-  }
-
-  // Fetch full channel details from YouTube Data API v3
-  async function fetchChannelDetails(apiKey: string, channelId: string) {
-    validateCredentials(apiKey, channelId);
-
-    const url = `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics,contentDetails,brandingSettings&id=${channelId.trim()}&key=${apiKey.trim()}`;
-    const data = await fetchGoogleAPI(url);
-
-    if (!data.items || data.items.length === 0) {
-      throw new Error("Invalid Channel ID: No YouTube channel was found with the specified ID. Please verify the ID.");
-    }
-
-    const item = data.items[0];
-    const snippet = item.snippet || {};
-    const stats = item.statistics || {};
-    const brand = item.brandingSettings || {};
-    const contentDetails = item.contentDetails || {};
-
-    const logo = snippet.thumbnails?.high?.url || snippet.thumbnails?.medium?.url || snippet.thumbnails?.default?.url || "";
-    const banner = brand.image?.bannerExternalUrl || "";
-    const customUrl = snippet.customUrl || "";
-
-    const channelData = {
-      apiKey: apiKey.trim(),
-      channelId: item.id,
-      channelName: snippet.title || "TITAN ESP",
-      channelHandle: customUrl || `@${(snippet.title || "").toLowerCase().replace(/\s/g, "")}`,
-      channelUrl: customUrl ? `https://youtube.com/${customUrl}` : `https://youtube.com/channel/${item.id}`,
-      profileImage: logo,
-      bannerImage: banner,
-      subscriberCount: parseInt(stats.subscriberCount, 10) || 0,
-      videoCount: parseInt(stats.videoCount, 10) || 0,
-      viewCount: parseInt(stats.viewCount, 10) || 0,
-      description: snippet.description || "",
-      country: snippet.country || "Global",
-      publishedAt: snippet.publishedAt || "",
-      uploadsPlaylistId: contentDetails.relatedPlaylists?.uploads || "",
-      lastUpdated: new Date().toISOString()
-    };
-
-    return channelData;
-  }
-
-  // Save Channel details to Firestore
-  async function saveChannelDetailsToDb(channelData: any) {
-    logYtModule("DATABASE", `Saving channel data to database for: ${channelData.channelName}`);
-    if (db) {
-      try {
-        const channelDocRef = doc(db, "appSettings", "youtube_channel");
-        await setDoc(channelDocRef, channelData, { merge: true });
-        logYtModule("DATABASE", "Successfully saved channel statistics to Firestore.");
-      } catch (dbErr: any) {
-        logYtModule("ERROR", `Failed to save channel stats to Firestore: ${dbErr?.message || dbErr}`);
-      }
-    } else {
-      logYtModule("DATABASE", "Database is unavailable. Using local fallback.");
-    }
-  }
-
-  // Fetch videos and shorts from the uploads playlist
-  async function fetchVideosAndShortsFromAPI(apiKey: string, uploadsPlaylistId: string) {
-    if (!uploadsPlaylistId) {
-      logYtModule("PROXY", "No uploads playlist ID present. Skipping item sync.");
-      return { videos: [], shorts: [] };
-    }
-
-    const playlistUrl = `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=${uploadsPlaylistId}&maxResults=50&key=${apiKey}`;
-    const playlistData = await fetchGoogleAPI(playlistUrl);
-    const items = playlistData.items || [];
-
-    if (items.length === 0) {
-      return { videos: [], shorts: [] };
-    }
-
-    const videoIds = items.map((item: any) => item.contentDetails?.videoId).filter(Boolean);
-    if (videoIds.length === 0) {
-      return { videos: [], shorts: [] };
-    }
-
-    const detailsUrl = `https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics&id=${videoIds.join(",")}&key=${apiKey}`;
-    const detailsData = await fetchGoogleAPI(detailsUrl);
-    const detailedVideos = detailsData.items || [];
-
-    const parsedVideos: any[] = [];
-    const parsedShorts: any[] = [];
-
-    detailedVideos.forEach((v: any) => {
-      const durationStr = v.contentDetails?.duration || "";
-      const seconds = parseDurationToSeconds(durationStr);
-      
-      const isShort = seconds <= 60 || 
-                      v.snippet?.title?.toLowerCase().includes("#shorts") || 
-                      v.snippet?.description?.toLowerCase().includes("#shorts");
-
-      const videoItem = {
-        id: v.id,
-        type: isShort ? "short" : "video",
-        title: v.snippet?.title || "",
-        description: v.snippet?.description || "",
-        publishedAt: v.snippet?.publishedAt || "",
-        thumbnail: v.snippet?.thumbnails?.maxres?.url || v.snippet?.thumbnails?.high?.url || v.snippet?.thumbnails?.medium?.url || v.snippet?.thumbnails?.default?.url || "",
-        duration: durationStr,
-        durationSeconds: seconds,
-        views: parseInt(v.statistics?.viewCount, 10) || 0,
-        likes: parseInt(v.statistics?.likeCount, 10) || 0,
-        comments: parseInt(v.statistics?.commentCount, 10) || 0,
-        videoUrl: isShort ? `https://youtube.com/shorts/${v.id}` : `https://youtube.com/watch?v=${v.id}`,
-        embedUrl: `https://www.youtube.com/embed/${v.id}`
-      };
-
-      if (isShort) {
-        parsedShorts.push(videoItem);
-      } else {
-        parsedVideos.push(videoItem);
-      }
-    });
-
-    return { videos: parsedVideos, shorts: parsedShorts };
-  }
-
-  // Fetch live streams and upcoming schedules
-  async function fetchLiveStatusFromAPI(apiKey: string, channelId: string) {
-    const liveSearchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channelId}&type=video&eventType=live&key=${apiKey}`;
-    const liveData = await fetchGoogleAPI(liveSearchUrl);
-    const liveItems = liveData.items || [];
-
-    let activeLive: any = null;
-    if (liveItems.length > 0) {
-      const liveVideo = liveItems[0];
-      const liveVideoId = liveVideo.id?.videoId;
-
-      if (liveVideoId) {
-        const liveDetailsUrl = `https://www.googleapis.com/youtube/v3/videos?part=liveStreamingDetails,statistics&id=${liveVideoId}&key=${apiKey}`;
-        let viewerCount = 0;
-        try {
-          const details = await fetchGoogleAPI(liveDetailsUrl);
-          const detailsItem = details.items?.[0];
-          viewerCount = parseInt(detailsItem?.liveStreamingDetails?.concurrentViewers, 10) || 0;
-        } catch (err) {
-          logYtModule("ERROR", "Unable to retrieve active viewers stream telemetry.");
-        }
-
-        activeLive = {
-          id: liveVideoId,
-          title: liveVideo.snippet?.title || "",
-          description: liveVideo.snippet?.description || "",
-          thumbnail: liveVideo.snippet?.thumbnails?.high?.url || liveVideo.snippet?.thumbnails?.default?.url || "",
-          publishedAt: liveVideo.snippet?.publishedAt || "",
-          viewerCount: viewerCount
-        };
-      }
-    }
-
-    const upcomingSearchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channelId}&type=video&eventType=upcoming&key=${apiKey}`;
-    let upcomingStreams: any[] = [];
-    try {
-      const upcomingData = await fetchGoogleAPI(upcomingSearchUrl);
-      upcomingStreams = (upcomingData.items || []).map((v: any) => ({
-        id: v.id?.videoId || "",
-        title: v.snippet?.title || "",
-        description: v.snippet?.description || "",
-        thumbnail: v.snippet?.thumbnails?.high?.url || v.snippet?.thumbnails?.default?.url || "",
-        publishedAt: v.snippet?.publishedAt || ""
-      })).filter((item: any) => item.id !== "");
-    } catch (err) {
-      logYtModule("ERROR", "Failed to retrieve upcoming scheduled streams.");
-    }
-
-    return {
-      isLive: !!activeLive,
-      activeLive,
-      upcomingStreams,
-      pastLiveStreams: [] as any[]
-    };
-  }
-
-  // Fetch completed past live streams
-  async function fetchCompletedLiveStreamsFromAPI(apiKey: string, channelId: string) {
-    const completedUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channelId}&type=video&eventType=completed&maxResults=20&key=${apiKey}`;
-    try {
-      const data = await fetchGoogleAPI(completedUrl);
-      const items = data.items || [];
-      if (items.length === 0) return [];
-      
-      const videoIds = items.map((item: any) => item.id?.videoId).filter(Boolean);
-      if (videoIds.length === 0) return [];
-
-      const detailsUrl = `https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics&id=${videoIds.join(",")}&key=${apiKey}`;
-      const detailsData = await fetchGoogleAPI(detailsUrl);
-      const detailedVideos = detailsData.items || [];
-
-      return detailedVideos.map((v: any) => {
-        const durationStr = v.contentDetails?.duration || "";
-        const seconds = parseDurationToSeconds(durationStr);
-        return {
-          id: v.id,
-          type: "live",
-          title: v.snippet?.title || "",
-          description: v.snippet?.description || "",
-          publishedAt: v.snippet?.publishedAt || "",
-          thumbnail: v.snippet?.thumbnails?.maxres?.url || v.snippet?.thumbnails?.high?.url || v.snippet?.thumbnails?.medium?.url || v.snippet?.thumbnails?.default?.url || "",
-          duration: durationStr,
-          durationSeconds: seconds,
-          views: parseInt(v.statistics?.viewCount, 10) || 0,
-          likes: parseInt(v.statistics?.likeCount, 10) || 0,
-          comments: parseInt(v.statistics?.commentCount, 10) || 0,
-          videoUrl: `https://youtube.com/watch?v=${v.id}`,
-          embedUrl: `https://www.youtube.com/embed/${v.id}`
-        };
-      });
-    } catch (err: any) {
-      logYtModule("ERROR", `Failed to fetch completed live streams: ${err.message}`);
-      return [];
-    }
-  }
-
-  // Save imported video/shorts/live items to Firestore to prevent duplicates
-  async function saveItemsToDb(items: any[]) {
-    if (!db || items.length === 0) return;
-    logYtModule("DATABASE", `Saving ${items.length} items to database...`);
-    try {
-      for (const item of items) {
-        const docRef = doc(db, "youtube_videos", item.id);
-        await setDoc(docRef, item, { merge: true });
-      }
-      logYtModule("DATABASE", `Successfully saved ${items.length} items to database.`);
-    } catch (err: any) {
-      logYtModule("ERROR", `Failed to save items to database: ${err.message}`);
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // EXPLICIT JSON API ENDPOINTS
-  // ---------------------------------------------------------------------------
 
   const helperResponseJson = (res: express.Response, status: number, payload: any) => {
     res.setHeader("Content-Type", "application/json");
     return res.status(status).json(payload);
   };
 
-  // Helper to parse channel URL and extract strategy/query details
-  async function resolveChannelIdAndDetailsFromUrl(apiKey: string, url: string) {
-    const trimmedUrl = url.trim();
-    
-    // 1. Direct channel ID pattern: UCxxxxxxxxxxxxxxxxxxxxxxx
-    const matchChannelId = trimmedUrl.match(/(UC[a-zA-Z0-9_-]{22})/);
-    if (matchChannelId) {
-      const channelId = matchChannelId[1];
-      logYtModule("PROXY", `Direct Channel ID detected from URL: ${channelId}`);
-      return { channelId, strategy: "id" };
-    }
+  // Local memory fallbacks
+  let manualChannelInfo: any = null;
+  let manualVideos: any[] = [];
+  let manualShorts: any[] = [];
+  let manualLives: any[] = [];
 
-    // 2. Handle pattern: @ChannelName
-    const matchHandle = trimmedUrl.match(/@([a-zA-Z0-9_.-]+)/);
-    if (matchHandle) {
-      const handle = '@' + matchHandle[1];
-      logYtModule("PROXY", `Handle detected from URL: ${handle}`);
-      return { handle, strategy: "handle" };
-    }
-
-    // 3. Custom path patterns: /c/CustomName or /user/Username
-    const matchCustom = trimmedUrl.match(/\/c\/([a-zA-Z0-9_-]+)/);
-    if (matchCustom) {
-      const customName = matchCustom[1];
-      logYtModule("PROXY", `Custom URL segment detected: ${customName}`);
-      return { customName, strategy: "custom" };
-    }
-
-    const matchUser = trimmedUrl.match(/\/user\/([a-zA-Z0-9_-]+)/);
-    if (matchUser) {
-      const username = matchUser[1];
-      logYtModule("PROXY", `User profile segment detected: ${username}`);
-      return { username, strategy: "user" };
-    }
-
-    if (trimmedUrl.startsWith("@")) {
-      return { handle: trimmedUrl, strategy: "handle" };
-    }
-
-    if (!trimmedUrl.includes("/") && trimmedUrl.length > 0) {
-      return { handle: trimmedUrl.startsWith("@") ? trimmedUrl : '@' + trimmedUrl, strategy: "handle" };
-    }
-
-    throw new Error("Invalid YouTube Channel URL format. Please provide a standard URL (e.g. https://youtube.com/@ChannelName or https://youtube.com/channel/UC...)");
+  // Helper to extract YouTube 11-char ID
+  function getYouTubeId(url: string): string | null {
+    if (!url) return null;
+    const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=|shorts\/|live\/)([^#\&\?]*).*/;
+    const match = url.match(regExp);
+    return (match && match[2].length === 11) ? match[2] : null;
   }
 
-  // Helper to fetch channel details from the API using URL
-  async function fetchChannelByUrl(apiKey: string, channelUrl: string) {
-    const resolution = await resolveChannelIdAndDetailsFromUrl(apiKey, channelUrl);
-    let url = "";
-
-    if (resolution.strategy === "id") {
-      url = `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics,contentDetails,brandingSettings&id=${resolution.channelId}&key=${apiKey}`;
-    } else if (resolution.strategy === "handle") {
-      url = `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics,contentDetails,brandingSettings&forHandle=${encodeURIComponent(resolution.handle)}&key=${apiKey}`;
-    } else if (resolution.strategy === "user") {
-      url = `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics,contentDetails,brandingSettings&forUsername=${resolution.username}&key=${apiKey}`;
-    } else if (resolution.strategy === "custom") {
-      url = `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics,contentDetails,brandingSettings&forHandle=${encodeURIComponent('@' + resolution.customName)}&key=${apiKey}`;
-    }
-
+  // Scraper utility to extract public YouTube channel info from its URL
+  async function scrapeYouTubeChannel(channelUrl: string) {
     try {
-      const data = await fetchGoogleAPI(url);
-      if (data.items && data.items.length > 0) {
-        return data.items[0];
-      }
-    } catch (err: any) {
-      logYtModule("ERROR", `Failed fetching via strategy ${resolution.strategy}: ${err.message}`);
-    }
-
-    // Search Fallback
-    if (resolution.strategy !== "id") {
-      logYtModule("PROXY", `Attempting search fallback for query: ${channelUrl}`);
-      const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(channelUrl)}&type=channel&maxResults=1&key=${apiKey}`;
-      try {
-        const searchData = await fetchGoogleAPI(searchUrl);
-        if (searchData.items && searchData.items.length > 0) {
-          const foundChannelId = searchData.items[0].snippet?.channelId;
-          if (foundChannelId) {
-            logYtModule("PROXY", `Search fallback found channel ID: ${foundChannelId}`);
-            const detailsUrl = `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics,contentDetails,brandingSettings&id=${foundChannelId}&key=${apiKey}`;
-            const detailsData = await fetchGoogleAPI(detailsUrl);
-            if (detailsData.items && detailsData.items.length > 0) {
-              return detailsData.items[0];
-            }
-          }
+      const res = await fetch(channelUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
+          'Accept-Language': 'en-US,en;q=0.9'
         }
-      } catch (searchErr: any) {
-        logYtModule("ERROR", `Search fallback failed: ${searchErr.message}`);
+      });
+      if (!res.ok) {
+        throw new Error(`Failed to load channel URL. HTTP status: ${res.status}`);
       }
-    }
+      const html = await res.text();
+      
+      // 1. Channel Name
+      const nameMatch = html.match(/<meta property="og:title" content="([^"]+)"/i) || 
+                        html.match(/<meta content="([^"]+)" property="og:title"/i) ||
+                        html.match(/<title>([^<]+) - YouTube<\/title>/i);
+      let channelName = nameMatch ? nameMatch[1] : "YouTube Channel";
+      channelName = channelName.replace(" - YouTube", "").trim();
+      channelName = channelName.replace(/\\u0026/g, "&").replace(/&amp;/g, "&");
 
-    throw new Error("Channel not found: We couldn't find a matching YouTube channel for the provided URL.");
+      // 2. Profile Image
+      const imgMatch = html.match(/<meta property="og:image" content="([^"]+)"/i) ||
+                       html.match(/<meta content="([^"]+)" property="og:image"/i);
+      let profileImage = imgMatch ? imgMatch[1] : "https://cdn.pixabay.com/photo/2015/10/05/22/37/blank-profile-picture-973460_1280.png";
+      profileImage = profileImage.replace(/\\u0026/g, "&").replace(/&amp;/g, "&");
+
+      // 3. Banner Image
+      let bannerImage = "";
+      const bannerMatch = html.match(/"banner":\s*\{\s*"thumbnails":\s*\[\s*\{\s*"url":\s*"([^"]+)"/i) || 
+                          html.match(/"bannerPromoHeaderRenderer":.*?"url":\s*"([^"]+)"/i) ||
+                          html.match(/https:\/\/yt3\.googleusercontent\.com\/[^"\s]*=w1060/i) ||
+                          html.match(/https:\/\/yt3\.googleusercontent\.com\/[^"\s]*=w2120/i);
+      if (bannerMatch) {
+        bannerImage = bannerMatch[0] || bannerMatch[1];
+        bannerImage = bannerImage.replace(/\\u0026/g, "&").replace(/&amp;/g, "&").replace(/"/g, "").replace(/'/g, "");
+      }
+
+      // 4. Subscriber Count
+      let subscriberCount = "Publicly unavailable";
+      const subMatch = html.match(/"subscriberCountText":\s*\{\s*"accessibility":\s*\{\s*"accessibilityData":\s*\{\s*"label":\s*"([^"]+)"/i);
+      if (subMatch && subMatch[1]) {
+        subscriberCount = subMatch[1].replace(/subscribers/i, "").trim();
+      } else {
+        const subFallback = html.match(/([\d\.]+[KMB]?)\s*subscribers/i) || html.match(/"label":\s*"([\d\.]+[KMB]?)\s*subscribers/i);
+        if (subFallback) {
+          subscriberCount = subFallback[1];
+        }
+      }
+      subscriberCount = subscriberCount.replace(/\\u0026/g, "&").replace(/&amp;/g, "&").replace(/subscribers/i, "").trim();
+
+      return {
+        channelName,
+        profileImage,
+        bannerImage,
+        channelUrl,
+        subscriberCount
+      };
+    } catch (error: any) {
+      console.error("Error scraping YouTube channel:", error);
+      throw new Error(`Scraping failed: ${error.message}`);
+    }
   }
 
-  // New endpoint to automatically detect channel details from paste
-  app.post("/api/youtube/detect", async (req, res) => {
-    logYtModule("REQUEST", "POST /api/youtube/detect requested");
+  // 1. YouTube Channel Endpoints
+  app.get("/api/youtube/channel", async (req, res) => {
     try {
-      const { channelUrl } = req.body;
-      if (!channelUrl || typeof channelUrl !== "string" || channelUrl.trim() === "") {
+      if (db) {
+        const docSnap = await getDoc(doc(db, "appSettings", "youtube_channel"));
+        if (docSnap.exists()) {
+          manualChannelInfo = docSnap.data();
+        }
+      }
+      return helperResponseJson(res, 200, manualChannelInfo || null);
+    } catch (err: any) {
+      console.error("Error getting channel info:", err);
+      return helperResponseJson(res, 200, manualChannelInfo || null);
+    }
+  });
+
+  app.post("/api/youtube/import", async (req, res) => {
+    try {
+      const { channelUrl, userUid } = req.body;
+      if (!channelUrl) {
         return helperResponseJson(res, 400, { success: false, error: "Channel URL is required." });
       }
-
-      const apiKey = "AIzaSyDnjQ1CT7epD61l5dgzGqMxeXAWDUG-dhw";
-      logYtModule("PROXY", `Detecting channel details for URL: ${channelUrl}`);
-      const rawChannel = await fetchChannelByUrl(apiKey, channelUrl);
-      
-      const snippet = rawChannel.snippet || {};
-      const stats = rawChannel.statistics || {};
-      const brand = rawChannel.brandingSettings || {};
-      const contentDetails = rawChannel.contentDetails || {};
-
-      const logo = snippet.thumbnails?.high?.url || snippet.thumbnails?.medium?.url || snippet.thumbnails?.default?.url || "";
-      const banner = brand.image?.bannerExternalUrl || "";
-      const customUrl = snippet.customUrl || "";
-
-      const detectedData = {
-        channelId: rawChannel.id,
-        channelName: snippet.title || "TITAN ESP",
-        channelHandle: customUrl || `@${(snippet.title || "").toLowerCase().replace(/\s/g, "")}`,
-        channelUrl: customUrl ? `https://youtube.com/${customUrl}` : `https://youtube.com/channel/${rawChannel.id}`,
-        profileImage: logo,
-        bannerImage: banner,
-        subscriberCount: parseInt(stats.subscriberCount, 10) || 0,
-        videoCount: parseInt(stats.videoCount, 10) || 0,
-        viewCount: parseInt(stats.viewCount, 10) || 0,
-        description: snippet.description || "",
-        country: snippet.country || "Global",
-        publishedAt: snippet.publishedAt || "",
-        uploadsPlaylistId: contentDetails.relatedPlaylists?.uploads || ""
-      };
-
-      logYtModule("RESPONSE", `POST /api/youtube/detect successfully resolved channel: ${detectedData.channelName}`);
-      return helperResponseJson(res, 200, {
-        success: true,
-        channel: detectedData
-      });
-    } catch (err: any) {
-      logYtModule("RESPONSE", `POST /api/youtube/detect failed: ${err.message}`);
-      return helperResponseJson(res, 400, { success: false, error: err.message || "Failed to detect YouTube channel." });
-    }
-  });
-
-  // New endpoint to import channel completely and deep sync
-  app.post("/api/youtube/import", async (req, res) => {
-    logYtModule("REQUEST", "POST /api/youtube/import requested");
-    try {
-      const { channelUrl } = req.body;
-      if (!channelUrl || typeof channelUrl !== "string" || channelUrl.trim() === "") {
-        return helperResponseJson(res, 400, { success: false, error: "Channel URL is required for import." });
+      if (userUid) {
+        const isAdmin = await verifyAdminRole(userUid);
+        if (!isAdmin) {
+          return helperResponseJson(res, 403, { success: false, error: "Forbidden: Admin privileges required." });
+        }
       }
-
-      const apiKey = "AIzaSyDnjQ1CT7epD61l5dgzGqMxeXAWDUG-dhw";
-      logYtModule("PROXY", `Importing channel for URL: ${channelUrl}`);
-      const rawChannel = await fetchChannelByUrl(apiKey, channelUrl);
       
-      const snippet = rawChannel.snippet || {};
-      const stats = rawChannel.statistics || {};
-      const brand = rawChannel.brandingSettings || {};
-      const contentDetails = rawChannel.contentDetails || {};
-
-      const logo = snippet.thumbnails?.high?.url || snippet.thumbnails?.medium?.url || snippet.thumbnails?.default?.url || "";
-      const banner = brand.image?.bannerExternalUrl || "";
-      const customUrl = snippet.customUrl || "";
-
-      const channelData = {
-        apiKey: apiKey,
-        channelId: rawChannel.id,
-        channelName: snippet.title || "TITAN ESP",
-        channelHandle: customUrl || `@${(snippet.title || "").toLowerCase().replace(/\s/g, "")}`,
-        channelUrl: customUrl ? `https://youtube.com/${customUrl}` : `https://youtube.com/channel/${rawChannel.id}`,
-        profileImage: logo,
-        bannerImage: banner,
-        subscriberCount: parseInt(stats.subscriberCount, 10) || 0,
-        videoCount: parseInt(stats.videoCount, 10) || 0,
-        viewCount: parseInt(stats.viewCount, 10) || 0,
-        description: snippet.description || "",
-        country: snippet.country || "Global",
-        publishedAt: snippet.publishedAt || "",
-        uploadsPlaylistId: contentDetails.relatedPlaylists?.uploads || "",
-        lastUpdated: new Date().toISOString()
-      };
-
-      const configData: YouTubeConfig = {
-        enabled: true,
-        apiKey: apiKey,
-        channelId: rawChannel.id,
-        cacheDurationMinutes: localYouTubeConfig.cacheDurationMinutes || 15,
-        autoSync: localYouTubeConfig.autoSync ?? true,
-        updatedAt: new Date().toISOString()
-      };
-
-      localYouTubeConfig = configData;
+      const scraped = await scrapeYouTubeChannel(channelUrl.trim());
+      manualChannelInfo = scraped;
+      
       if (db) {
-        const docRef = doc(db, "appSettings", "youtube");
-        await setDoc(docRef, configData);
-        logYtModule("DATABASE", "Successfully saved imported YouTube config to Firestore.");
+        await setDoc(doc(db, "appSettings", "youtube_channel"), scraped, { merge: true });
       }
-
-      await saveChannelDetailsToDb(channelData);
-
-      // Perform deep synchronization
-      let syncedVideos: any[] = [];
-      let syncedShorts: any[] = [];
-      let syncedLive: any = null;
-      let completedLive: any[] = [];
-
-      try {
-        const syncItems = await fetchVideosAndShortsFromAPI(apiKey, channelData.uploadsPlaylistId);
-        syncedVideos = syncItems.videos;
-        syncedShorts = syncItems.shorts;
-        
-        syncedLive = await fetchLiveStatusFromAPI(apiKey, rawChannel.id);
-        completedLive = await fetchCompletedLiveStreamsFromAPI(apiKey, rawChannel.id);
-        syncedLive.pastLiveStreams = completedLive;
-
-        // Save all items to database to prevent duplicate imports
-        const allItems = [...syncedVideos, ...syncedShorts, ...completedLive];
-        if (syncedLive.activeLive) {
-          allItems.push({
-            ...syncedLive.activeLive,
-            type: "active",
-            videoUrl: `https://youtube.com/watch?v=${syncedLive.activeLive.id}`,
-            embedUrl: `https://www.youtube.com/embed/${syncedLive.activeLive.id}`
-          });
-        }
-        for (const up of (syncedLive.upcomingStreams || [])) {
-          allItems.push({
-            ...up,
-            type: "upcoming",
-            videoUrl: `https://youtube.com/watch?v=${up.id}`,
-            embedUrl: `https://www.youtube.com/embed/${up.id}`
-          });
-        }
-
-        await saveItemsToDb(allItems);
-      } catch (syncErr: any) {
-        logYtModule("ERROR", `Import deep item sync hit transient error: ${syncErr.message}`);
-      }
-
-      // Sync into memory cache
-      ytChannelCache = channelData;
-      ytVideosCache = syncedVideos;
-      ytShortsCache = syncedShorts;
-      ytLiveCache = syncedLive;
-      ytCacheTimestamp = Date.now();
-      ytLiveCacheTimestamp = Date.now();
-
-      logYtModule("RESPONSE", `POST /api/youtube/import successfully completed for ${channelData.channelName}`);
-      return helperResponseJson(res, 200, {
-        success: true,
-        message: `Successfully connected to channel: ${channelData.channelName}! Configuration saved and synchronized immediately.`,
-        channel: formatChannelForUI(channelData)
-      });
-    } catch (err: any) {
-      logYtModule("RESPONSE", `POST /api/youtube/import failed: ${err.message}`);
-      return helperResponseJson(res, 400, { success: false, error: err.message || "Failed to import YouTube channel." });
-    }
-  });
-
-  // 1. Get YouTube configuration details
-  app.get("/api/youtube/config", async (req, res) => {
-    logYtModule("REQUEST", "GET /api/youtube/config requested");
-    try {
-      const config = await getYouTubeConfigSecure();
-      logYtModule("RESPONSE", "GET /api/youtube/config successfully completed.");
-      return helperResponseJson(res, 200, {
-        enabled: config.enabled ?? false,
-        channelId: config.channelId ?? "",
-        cacheDurationMinutes: config.cacheDurationMinutes ?? 15,
-        autoSync: config.autoSync ?? true,
-        hasApiKey: !!(config.apiKey && config.apiKey.trim() !== "")
-      });
-    } catch (err: any) {
-      logYtModule("RESPONSE", `GET /api/youtube/config failed: ${err.message}`);
-      return helperResponseJson(res, 500, { success: false, error: err.message || "Failed to load configuration" });
-    }
-  });
-
-  // 2. Save configuration parameters (WITH RESILIENT MERGE)
-  app.post("/api/youtube/config", async (req, res) => {
-    logYtModule("REQUEST", "POST /api/youtube/config requested");
-    try {
-      const { enabled, cacheDurationMinutes, autoSync, apiKey, channelId } = req.body;
       
-      const saved = await getYouTubeConfigSecure();
-      
-      let cacheMinutes = 15;
-      if (cacheDurationMinutes !== undefined && cacheDurationMinutes !== null) {
-        const parsed = parseInt(String(cacheDurationMinutes), 10);
-        if (!isNaN(parsed) && parsed > 0) {
-          cacheMinutes = parsed;
-        }
-      }
-
-      let finalApiKey = saved.apiKey || "AIzaSyDnjQ1CT7epD61l5dgzGqMxeXAWDUG-dhw";
-      if (apiKey !== undefined && apiKey !== null && apiKey.trim() !== "") {
-        const trimmed = apiKey.trim();
-        if (!trimmed.includes("•")) {
-          finalApiKey = trimmed;
-        }
-      }
-
-      let finalChannelId = saved.channelId || "";
-      if (channelId !== undefined && channelId !== null && channelId.trim() !== "") {
-        finalChannelId = channelId.trim();
-      }
-
-      if (finalApiKey && finalChannelId) {
-        validateCredentials(finalApiKey, finalChannelId);
-      }
-
-      const configData: YouTubeConfig = {
-        enabled: !!enabled,
-        apiKey: finalApiKey,
-        channelId: finalChannelId,
-        cacheDurationMinutes: cacheMinutes,
-        autoSync: autoSync ?? true,
-        updatedAt: new Date().toISOString()
-      };
-
-      localYouTubeConfig = configData;
-
-      if (db) {
-        const docRef = doc(db, "appSettings", "youtube");
-        await setDoc(docRef, configData);
-        logYtModule("DATABASE", "Successfully saved YouTube settings to Firestore.");
-      }
-
-      // Clear memory caches on settings change to force reload
-      ytChannelCache = null;
-      ytVideosCache = [];
-      ytShortsCache = [];
-      ytLiveCache = null;
-      ytCacheTimestamp = 0;
-      ytLiveCacheTimestamp = 0;
-
-      logYtModule("RESPONSE", "POST /api/youtube/config successfully completed.");
-      return helperResponseJson(res, 200, { success: true, message: "YouTube Integration Settings saved successfully!" });
+      return helperResponseJson(res, 200, { success: true, message: "Channel imported successfully!", channel: scraped });
     } catch (err: any) {
-      logYtModule("RESPONSE", `POST /api/youtube/config failed: ${err.message}`);
-      return helperResponseJson(res, 400, { success: false, error: err.message || "Failed to save configuration settings" });
+      console.error("Error importing manual channel:", err);
+      return helperResponseJson(res, 500, { success: false, error: err.message || "Failed to import channel info." });
     }
   });
 
-  // 3. Disconnect Channel
   app.post("/api/youtube/disconnect", async (req, res) => {
-    logYtModule("REQUEST", "POST /api/youtube/disconnect requested");
     try {
-      const configData: YouTubeConfig = {
-        enabled: false,
-        apiKey: "AIzaSyDnjQ1CT7epD61l5dgzGqMxeXAWDUG-dhw",
-        channelId: "",
-        cacheDurationMinutes: 15,
-        autoSync: true,
-        updatedAt: new Date().toISOString()
-      };
-
-      localYouTubeConfig = configData;
-      if (db) {
-        const docRef = doc(db, "appSettings", "youtube");
-        await setDoc(docRef, configData);
-
-        const channelDocRef = doc(db, "appSettings", "youtube_channel");
-        await setDoc(channelDocRef, {
-          apiKey: "",
-          channelId: "",
-          channelName: "",
-          channelHandle: "",
-          channelUrl: "",
-          profileImage: "",
-          bannerImage: "",
-          subscriberCount: 0,
-          videoCount: 0,
-          viewCount: 0,
-          description: "",
-          country: "",
-          publishedAt: "",
-          lastUpdated: new Date().toISOString()
-        });
-
-        // Clean up imported videos collection
-        try {
-          const q = query(collection(db, "youtube_videos"));
-          const snap = await getDocs(q);
-          for (const docSnap of snap.docs) {
-            await deleteDoc(doc(db, "youtube_videos", docSnap.id));
-          }
-          logYtModule("DATABASE", "Successfully cleared all imported videos from Firestore.");
-        } catch (dbErr: any) {
-          logYtModule("ERROR", `Failed to clear videos from Firestore: ${dbErr.message}`);
+      const { userUid } = req.body;
+      if (userUid) {
+        const isAdmin = await verifyAdminRole(userUid);
+        if (!isAdmin) {
+          return helperResponseJson(res, 403, { success: false, error: "Forbidden: Admin privileges required." });
         }
       }
-
-      // Invalidate memory caches
-      ytChannelCache = null;
-      ytVideosCache = [];
-      ytShortsCache = [];
-      ytLiveCache = null;
-      ytCacheTimestamp = 0;
-      ytLiveCacheTimestamp = 0;
-
-      logYtModule("RESPONSE", "POST /api/youtube/disconnect successfully completed.");
-      return helperResponseJson(res, 200, { success: true, message: "YouTube channel disconnected and data cleared successfully." });
+      manualChannelInfo = null;
+      if (db) {
+        await deleteDoc(doc(db, "appSettings", "youtube_channel"));
+      }
+      return helperResponseJson(res, 200, { success: true, message: "Channel disconnected successfully!" });
     } catch (err: any) {
-      logYtModule("RESPONSE", `POST /api/youtube/disconnect failed: ${err.message}`);
+      console.error("Error disconnecting channel:", err);
       return helperResponseJson(res, 500, { success: false, error: err.message || "Failed to disconnect channel." });
     }
   });
 
-  // 4. Sync Now
+  // Endpoints for backwards compatibility config toggle
+  app.get("/api/youtube/config", async (req, res) => {
+    try {
+      if (db) {
+        const docRef = doc(db, "appSettings", "youtube");
+        const docSnap = await getDoc(docRef);
+        if (docSnap.exists()) {
+          const dbData = docSnap.data();
+          localYouTubeConfig.enabled = dbData.enabled ?? localYouTubeConfig.enabled;
+        }
+      }
+      return helperResponseJson(res, 200, {
+        enabled: localYouTubeConfig.enabled,
+        hasApiKey: false,
+        channelId: "manual"
+      });
+    } catch (err: any) {
+      return helperResponseJson(res, 200, {
+        enabled: localYouTubeConfig.enabled,
+        hasApiKey: false,
+        channelId: "manual"
+      });
+    }
+  });
+
+  app.post("/api/youtube/config", async (req, res) => {
+    try {
+      const { enabled, userUid } = req.body;
+      if (userUid) {
+        const isAdmin = await verifyAdminRole(userUid);
+        if (!isAdmin) {
+          return helperResponseJson(res, 403, { success: false, error: "Forbidden: Admin privileges required." });
+        }
+      }
+      localYouTubeConfig.enabled = !!enabled;
+      if (db) {
+        await setDoc(doc(db, "appSettings", "youtube"), { enabled: localYouTubeConfig.enabled }, { merge: true });
+      }
+      return helperResponseJson(res, 200, { success: true, message: "Settings saved successfully." });
+    } catch (err: any) {
+      return helperResponseJson(res, 500, { success: false, error: err.message });
+    }
+  });
+
   app.post("/api/youtube/sync", async (req, res) => {
-    logYtModule("REQUEST", "POST /api/youtube/sync requested");
-    try {
-      const config = await getYouTubeConfigSecure();
-      if (!config.enabled || !config.apiKey || !config.channelId) {
-        return helperResponseJson(res, 400, { success: false, error: "YouTube Integration is disconnected. Configure a channel in the Admin Panel." });
-      }
-
-      const freshChannel = await fetchChannelDetails(config.apiKey, config.channelId);
-      await saveChannelDetailsToDb(freshChannel);
-
-      const { videos, shorts } = await fetchVideosAndShortsFromAPI(config.apiKey, freshChannel.uploadsPlaylistId);
-      const liveData = await fetchLiveStatusFromAPI(config.apiKey, config.channelId);
-      const completedLive = await fetchCompletedLiveStreamsFromAPI(config.apiKey, config.channelId);
-      liveData.pastLiveStreams = completedLive;
-
-      // Save all items to Firestore
-      const allItems = [...videos, ...shorts, ...completedLive];
-      if (liveData.activeLive) {
-        allItems.push({
-          ...liveData.activeLive,
-          type: "active",
-          videoUrl: `https://youtube.com/watch?v=${liveData.activeLive.id}`,
-          embedUrl: `https://www.youtube.com/embed/${liveData.activeLive.id}`
-        });
-      }
-      for (const up of (liveData.upcomingStreams || [])) {
-        allItems.push({
-          ...up,
-          type: "upcoming",
-          videoUrl: `https://youtube.com/watch?v=${up.id}`,
-          embedUrl: `https://www.youtube.com/embed/${up.id}`
-        });
-      }
-
-      await saveItemsToDb(allItems);
-
-      // Cache all synchronized outputs in memory
-      ytChannelCache = freshChannel;
-      ytVideosCache = videos;
-      ytShortsCache = shorts;
-      ytLiveCache = liveData;
-      ytCacheTimestamp = Date.now();
-      ytLiveCacheTimestamp = Date.now();
-
-      logYtModule("RESPONSE", "POST /api/youtube/sync successfully completed.");
-      return helperResponseJson(res, 200, { success: true, message: "YouTube channel synchronized successfully!", channel: freshChannel });
-    } catch (err: any) {
-      logYtModule("RESPONSE", `POST /api/youtube/sync failed: ${err.message}`);
-      return helperResponseJson(res, 500, { success: false, error: err.message || "Manual Synchronization failed." });
-    }
+    return helperResponseJson(res, 200, { success: true, message: "Manual sync triggers are disabled in completely manual mode." });
   });
 
-  // 5. Get Channel Profile details (with DB fallback)
-  app.get("/api/youtube/channel", async (req, res) => {
-    logYtModule("REQUEST", "GET /api/youtube/channel requested");
-    try {
-      const config = await getYouTubeConfigSecure();
-      if (!config.enabled || !config.apiKey || !config.channelId) {
-        return helperResponseJson(res, 400, { success: false, error: "YouTube Integration is disabled or not configured." });
-      }
-
-      const cacheExpiry = (config.cacheDurationMinutes || 15) * 60 * 1000;
-      if (ytChannelCache && (Date.now() - ytCacheTimestamp < cacheExpiry)) {
-        logYtModule("PROXY", "Serving channel data from memory cache.");
-        return helperResponseJson(res, 200, formatChannelForUI(ytChannelCache));
-      }
-
-      // DB Fallback
-      if (db && !ytChannelCache) {
-        logYtModule("DATABASE", "Retrieving channel data from Firestore Fallback...");
-        try {
-          const docSnap = await getDoc(doc(db, "appSettings", "youtube_channel"));
-          if (docSnap.exists()) {
-            ytChannelCache = docSnap.data();
-            ytCacheTimestamp = Date.now();
-            logYtModule("DATABASE", "Serving channel details from Firestore Fallback successfully.");
-            return helperResponseJson(res, 200, formatChannelForUI(ytChannelCache));
-          }
-        } catch (dbErr: any) {
-          logYtModule("ERROR", `Channel database fallback failed: ${dbErr.message}`);
-        }
-      }
-
-      logYtModule("PROXY", "Channel cache missing or expired. Fetching fresh from Google APIs...");
-      const freshChannel = await fetchChannelDetails(config.apiKey, config.channelId);
-      await saveChannelDetailsToDb(freshChannel);
-
-      ytChannelCache = freshChannel;
-      ytCacheTimestamp = Date.now();
-
-      logYtModule("RESPONSE", "GET /api/youtube/channel successfully completed.");
-      return helperResponseJson(res, 200, formatChannelForUI(freshChannel));
-    } catch (err: any) {
-      logYtModule("RESPONSE", `GET /api/youtube/channel failed: ${err.message}`);
-      return helperResponseJson(res, 500, { success: false, error: err.message || "Failed to load channel details" });
-    }
-  });
-
-  // 6. Get Videos (with DB fallback)
+  // 2. Videos CRUD Endpoints
   app.get("/api/youtube/videos", async (req, res) => {
-    logYtModule("REQUEST", "GET /api/youtube/videos requested");
     try {
-      const config = await getYouTubeConfigSecure();
-      if (!config.enabled || !config.apiKey || !config.channelId) {
-        return helperResponseJson(res, 400, { success: false, error: "YouTube Integration is disabled or not configured." });
-      }
-
-      const cacheExpiry = (config.cacheDurationMinutes || 15) * 60 * 1000;
-      if (ytChannelCache && ytVideosCache.length > 0 && (Date.now() - ytCacheTimestamp < cacheExpiry)) {
-        logYtModule("PROXY", "Serving videos from memory cache.");
-        return helperResponseJson(res, 200, ytVideosCache);
-      }
-
-      // DB Fallback
-      if (db && ytVideosCache.length === 0) {
-        logYtModule("DATABASE", "Retrieving videos from Firestore database...");
-        try {
-          const q = query(collection(db, "youtube_videos"), where("type", "==", "video"));
-          const snap = await getDocs(q);
-          const items: any[] = [];
-          snap.forEach(docSnap => {
-            items.push(docSnap.data());
+      let list: any[] = [];
+      if (db) {
+        const snap = await getDocs(collection(db, "manual_youtube_videos"));
+        snap.forEach((doc) => {
+          const data = doc.data();
+          list.push({
+            id: data.videoId || doc.id,
+            docId: doc.id,
+            title: data.title,
+            videoUrl: data.videoUrl,
+            videoId: data.videoId,
+            thumbnail: data.thumbnail,
+            description: data.description || "",
+            views: data.views ?? 1250,
+            likes: data.likes ?? 78,
+            comments: data.comments ?? 14,
+            duration: data.duration ?? "PT14M20S",
+            durationSeconds: data.durationSeconds ?? 860,
+            publishedAt: data.createdAt || data.publishedAt || new Date().toISOString()
           });
-          if (items.length > 0) {
-            items.sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
-            ytVideosCache = items;
-            logYtModule("DATABASE", `Loaded ${items.length} videos from Firestore successfully.`);
-            return helperResponseJson(res, 200, ytVideosCache);
-          }
-        } catch (dbErr: any) {
-          logYtModule("ERROR", `Failed to retrieve videos from Firestore fallback: ${dbErr.message}`);
-        }
-      }
-
-      logYtModule("PROXY", "Videos cache missing or expired. Fetching fresh from Google APIs...");
-      let uploadsId = "";
-      if (ytChannelCache) {
-        uploadsId = ytChannelCache.uploadsPlaylistId;
+        });
+        list.sort((a, b) => new Date(b.publishedAt || 0).getTime() - new Date(a.publishedAt || 0).getTime());
+        manualVideos = list;
       } else {
-        const freshChannel = await fetchChannelDetails(config.apiKey, config.channelId);
-        ytChannelCache = freshChannel;
-        uploadsId = freshChannel.uploadsPlaylistId;
+        list = manualVideos;
       }
-
-      const { videos, shorts } = await fetchVideosAndShortsFromAPI(config.apiKey, uploadsId);
-      ytVideosCache = videos;
-      ytShortsCache = shorts;
-      ytCacheTimestamp = Date.now();
-
-      // Save them all in background
-      await saveItemsToDb([...videos, ...shorts]);
-
-      logYtModule("RESPONSE", "GET /api/youtube/videos successfully completed.");
-      return helperResponseJson(res, 200, ytVideosCache);
+      return helperResponseJson(res, 200, list);
     } catch (err: any) {
-      logYtModule("RESPONSE", `GET /api/youtube/videos failed: ${err.message}`);
-      return helperResponseJson(res, 500, { success: false, error: err.message || "Failed to load videos list" });
+      console.error("Error getting manual videos:", err);
+      return helperResponseJson(res, 200, manualVideos);
     }
   });
 
-  // 7. Get Shorts (with DB fallback)
+  app.post("/api/youtube/videos", async (req, res) => {
+    try {
+      const { title, videoUrl, thumbnail, description, userUid } = req.body;
+      if (!title || !videoUrl) {
+        return helperResponseJson(res, 400, { success: false, error: "Title and Video URL are required." });
+      }
+      if (userUid) {
+        const isAdmin = await verifyAdminRole(userUid);
+        if (!isAdmin) {
+          return helperResponseJson(res, 403, { success: false, error: "Forbidden: Admin privileges required." });
+        }
+      }
+
+      const videoId = getYouTubeId(videoUrl);
+      if (!videoId) {
+        return helperResponseJson(res, 400, { success: false, error: "Invalid YouTube Video URL format." });
+      }
+
+      const finalThumbnail = thumbnail?.trim() || `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`;
+
+      const videoDoc = {
+        title: title.trim(),
+        videoUrl: videoUrl.trim(),
+        videoId,
+        thumbnail: finalThumbnail,
+        description: (description || "").trim(),
+        createdAt: new Date().toISOString()
+      };
+
+      let savedId = "vid_" + Date.now();
+      if (db) {
+        const docRef = await addDoc(collection(db, "manual_youtube_videos"), videoDoc);
+        savedId = docRef.id;
+      } else {
+        manualVideos.unshift({ id: savedId, ...videoDoc });
+      }
+
+      return helperResponseJson(res, 200, { success: true, message: "Video added successfully!", id: savedId });
+    } catch (err: any) {
+      console.error("Error adding video:", err);
+      return helperResponseJson(res, 500, { success: false, error: err.message || "Failed to add video." });
+    }
+  });
+
+  app.put("/api/youtube/videos/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { title, videoUrl, thumbnail, description, userUid } = req.body;
+      if (!title || !videoUrl) {
+        return helperResponseJson(res, 400, { success: false, error: "Title and Video URL are required." });
+      }
+      if (userUid) {
+        const isAdmin = await verifyAdminRole(userUid);
+        if (!isAdmin) {
+          return helperResponseJson(res, 403, { success: false, error: "Forbidden: Admin privileges required." });
+        }
+      }
+
+      const videoId = getYouTubeId(videoUrl);
+      if (!videoId) {
+        return helperResponseJson(res, 400, { success: false, error: "Invalid YouTube Video URL format." });
+      }
+
+      const finalThumbnail = thumbnail?.trim() || `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`;
+
+      const updatedDoc = {
+        title: title.trim(),
+        videoUrl: videoUrl.trim(),
+        videoId,
+        thumbnail: finalThumbnail,
+        description: (description || "").trim()
+      };
+
+      if (db) {
+        let targetDocId = id;
+        const directDoc = doc(db, "manual_youtube_videos", id);
+        const directSnap = await getDoc(directDoc);
+        if (!directSnap.exists()) {
+          const q = query(collection(db, "manual_youtube_videos"), where("videoId", "==", id));
+          const querySnap = await getDocs(q);
+          if (!querySnap.empty) {
+            targetDocId = querySnap.docs[0].id;
+          }
+        }
+        await setDoc(doc(db, "manual_youtube_videos", targetDocId), updatedDoc, { merge: true });
+      } else {
+        const idx = manualVideos.findIndex(v => v.id === id || v.videoId === id);
+        if (idx !== -1) {
+          manualVideos[idx] = { ...manualVideos[idx], ...updatedDoc };
+        }
+      }
+
+      return helperResponseJson(res, 200, { success: true, message: "Video updated successfully!" });
+    } catch (err: any) {
+      console.error("Error updating video:", err);
+      return helperResponseJson(res, 500, { success: false, error: err.message || "Failed to update video." });
+    }
+  });
+
+  app.delete("/api/youtube/videos/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { userUid } = req.body;
+      if (userUid) {
+        const isAdmin = await verifyAdminRole(userUid);
+        if (!isAdmin) {
+          return helperResponseJson(res, 403, { success: false, error: "Forbidden: Admin privileges required." });
+        }
+      }
+
+      if (db) {
+        let targetDocId = id;
+        const directDoc = doc(db, "manual_youtube_videos", id);
+        const directSnap = await getDoc(directDoc);
+        if (!directSnap.exists()) {
+          const q = query(collection(db, "manual_youtube_videos"), where("videoId", "==", id));
+          const querySnap = await getDocs(q);
+          if (!querySnap.empty) {
+            targetDocId = querySnap.docs[0].id;
+          }
+        }
+        await deleteDoc(doc(db, "manual_youtube_videos", targetDocId));
+      } else {
+        manualVideos = manualVideos.filter(v => v.id !== id && v.videoId !== id);
+      }
+
+      return helperResponseJson(res, 200, { success: true, message: "Video deleted successfully!" });
+    } catch (err: any) {
+      console.error("Error deleting video:", err);
+      return helperResponseJson(res, 500, { success: false, error: err.message || "Failed to delete video." });
+    }
+  });
+
+  // 3. Shorts CRUD Endpoints
   app.get("/api/youtube/shorts", async (req, res) => {
-    logYtModule("REQUEST", "GET /api/youtube/shorts requested");
     try {
-      const config = await getYouTubeConfigSecure();
-      if (!config.enabled || !config.apiKey || !config.channelId) {
-        return helperResponseJson(res, 400, { success: false, error: "YouTube Integration is disabled or not configured." });
-      }
-
-      const cacheExpiry = (config.cacheDurationMinutes || 15) * 60 * 1000;
-      if (ytChannelCache && ytShortsCache.length > 0 && (Date.now() - ytCacheTimestamp < cacheExpiry)) {
-        logYtModule("PROXY", "Serving shorts from memory cache.");
-        return helperResponseJson(res, 200, ytShortsCache);
-      }
-
-      // DB Fallback
-      if (db && ytShortsCache.length === 0) {
-        logYtModule("DATABASE", "Retrieving shorts from Firestore database...");
-        try {
-          const q = query(collection(db, "youtube_videos"), where("type", "==", "short"));
-          const snap = await getDocs(q);
-          const items: any[] = [];
-          snap.forEach(docSnap => {
-            items.push(docSnap.data());
+      let list: any[] = [];
+      if (db) {
+        const snap = await getDocs(collection(db, "manual_youtube_shorts"));
+        snap.forEach((doc) => {
+          const data = doc.data();
+          list.push({
+            id: data.videoId || doc.id,
+            docId: doc.id,
+            title: data.title,
+            shortUrl: data.shortUrl,
+            videoId: data.videoId,
+            thumbnail: data.thumbnail,
+            views: data.views ?? 3840,
+            likes: data.likes ?? 210,
+            comments: data.comments ?? 11,
+            publishedAt: data.createdAt || data.publishedAt || new Date().toISOString()
           });
-          if (items.length > 0) {
-            items.sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
-            ytShortsCache = items;
-            logYtModule("DATABASE", `Loaded ${items.length} shorts from Firestore successfully.`);
-            return helperResponseJson(res, 200, ytShortsCache);
-          }
-        } catch (dbErr: any) {
-          logYtModule("ERROR", `Failed to retrieve shorts from Firestore: ${dbErr.message}`);
-        }
-      }
-
-      logYtModule("PROXY", "Shorts cache missing or expired. Fetching fresh from Google APIs...");
-      let uploadsId = "";
-      if (ytChannelCache) {
-        uploadsId = ytChannelCache.uploadsPlaylistId;
+        });
+        list.sort((a, b) => new Date(b.publishedAt || 0).getTime() - new Date(a.publishedAt || 0).getTime());
+        manualShorts = list;
       } else {
-        const freshChannel = await fetchChannelDetails(config.apiKey, config.channelId);
-        ytChannelCache = freshChannel;
-        uploadsId = freshChannel.uploadsPlaylistId;
+        list = manualShorts;
       }
-
-      const { videos, shorts } = await fetchVideosAndShortsFromAPI(config.apiKey, uploadsId);
-      ytVideosCache = videos;
-      ytShortsCache = shorts;
-      ytCacheTimestamp = Date.now();
-
-      await saveItemsToDb([...videos, ...shorts]);
-
-      logYtModule("RESPONSE", "GET /api/youtube/shorts successfully completed.");
-      return helperResponseJson(res, 200, ytShortsCache);
+      return helperResponseJson(res, 200, list);
     } catch (err: any) {
-      logYtModule("RESPONSE", `GET /api/youtube/shorts failed: ${err.message}`);
-      return helperResponseJson(res, 500, { success: false, error: err.message || "Failed to load shorts list" });
+      console.error("Error getting manual shorts:", err);
+      return helperResponseJson(res, 200, manualShorts);
     }
   });
 
-  // 8. Get Live broadcast status (with DB fallback)
-  app.get("/api/youtube/live", async (req, res) => {
-    logYtModule("REQUEST", "GET /api/youtube/live requested");
+  app.post("/api/youtube/shorts", async (req, res) => {
     try {
-      const config = await getYouTubeConfigSecure();
-      if (!config.enabled || !config.apiKey || !config.channelId) {
-        return helperResponseJson(res, 400, { success: false, error: "YouTube Integration is disabled or not configured." });
+      const { title, shortUrl, userUid } = req.body;
+      if (!title || !shortUrl) {
+        return helperResponseJson(res, 400, { success: false, error: "Title and Shorts URL are required." });
       }
-
-      // Live status cache duration restricted to 5 minutes
-      if (ytLiveCache && (Date.now() - ytLiveCacheTimestamp < 5 * 60 * 1000)) {
-        logYtModule("PROXY", "Serving live broadcast status from memory cache.");
-        return helperResponseJson(res, 200, ytLiveCache);
-      }
-
-      // DB Fallback
-      if (db && !ytLiveCache) {
-        logYtModule("DATABASE", "Retrieving live status from Firestore database...");
-        try {
-          // Fetch active
-          const qActive = query(collection(db, "youtube_videos"), where("type", "==", "active"));
-          const snapActive = await getDocs(qActive);
-          let activeLive: any = null;
-          if (!snapActive.empty) {
-            activeLive = snapActive.docs[0].data();
-          }
-
-          // Fetch upcoming
-          const qUpcoming = query(collection(db, "youtube_videos"), where("type", "==", "upcoming"));
-          const snapUpcoming = await getDocs(qUpcoming);
-          const upcomingStreams: any[] = [];
-          snapUpcoming.forEach(d => upcomingStreams.push(d.data()));
-
-          // Fetch past live streams
-          const qPast = query(collection(db, "youtube_videos"), where("type", "==", "live"));
-          const snapPast = await getDocs(qPast);
-          const pastLiveStreams: any[] = [];
-          snapPast.forEach(d => pastLiveStreams.push(d.data()));
-
-          if (activeLive || upcomingStreams.length > 0 || pastLiveStreams.length > 0) {
-            pastLiveStreams.sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
-            upcomingStreams.sort((a, b) => new Date(a.publishedAt).getTime() - new Date(b.publishedAt).getTime());
-            
-            ytLiveCache = {
-              isLive: !!activeLive,
-              activeLive,
-              upcomingStreams,
-              pastLiveStreams
-            };
-            ytLiveCacheTimestamp = Date.now();
-            logYtModule("DATABASE", "Successfully served live streams from Firestore fallback.");
-            return helperResponseJson(res, 200, ytLiveCache);
-          }
-        } catch (dbErr: any) {
-          logYtModule("ERROR", `Failed to load live fallback from DB: ${dbErr.message}`);
+      if (userUid) {
+        const isAdmin = await verifyAdminRole(userUid);
+        if (!isAdmin) {
+          return helperResponseJson(res, 403, { success: false, error: "Forbidden: Admin privileges required." });
         }
       }
 
-      logYtModule("PROXY", "Live broadcast status cache missing or expired. Fetching fresh from Google APIs...");
-      const liveData = await fetchLiveStatusFromAPI(config.apiKey, config.channelId);
-      const completedLive = await fetchCompletedLiveStreamsFromAPI(config.apiKey, config.channelId);
-      liveData.pastLiveStreams = completedLive;
-      
-      ytLiveCache = liveData;
-      ytLiveCacheTimestamp = Date.now();
-
-      // Save them to DB
-      const allItems = [...completedLive];
-      if (liveData.activeLive) {
-        allItems.push({
-          ...liveData.activeLive,
-          type: "active",
-          videoUrl: `https://youtube.com/watch?v=${liveData.activeLive.id}`,
-          embedUrl: `https://www.youtube.com/embed/${liveData.activeLive.id}`
-        });
+      const videoId = getYouTubeId(shortUrl);
+      if (!videoId) {
+        return helperResponseJson(res, 400, { success: false, error: "Invalid YouTube Shorts URL format." });
       }
-      for (const up of (liveData.upcomingStreams || [])) {
-        allItems.push({
-          ...up,
-          type: "upcoming",
-          videoUrl: `https://youtube.com/watch?v=${up.id}`,
-          embedUrl: `https://www.youtube.com/embed/${up.id}`
-        });
-      }
-      await saveItemsToDb(allItems);
 
-      logYtModule("RESPONSE", "GET /api/youtube/live successfully completed.");
-      return helperResponseJson(res, 200, liveData);
+      const shortDoc = {
+        title: title.trim(),
+        shortUrl: shortUrl.trim(),
+        videoId,
+        thumbnail: `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`,
+        createdAt: new Date().toISOString()
+      };
+
+      let savedId = "short_" + Date.now();
+      if (db) {
+        const docRef = await addDoc(collection(db, "manual_youtube_shorts"), shortDoc);
+        savedId = docRef.id;
+      } else {
+        manualShorts.unshift({ id: savedId, ...shortDoc });
+      }
+
+      return helperResponseJson(res, 200, { success: true, message: "Short added successfully!", id: savedId });
     } catch (err: any) {
-      logYtModule("RESPONSE", `GET /api/youtube/live failed: ${err.message}`);
-      return helperResponseJson(res, 500, { success: false, error: err.message || "Failed to load live status" });
+      console.error("Error adding short:", err);
+      return helperResponseJson(res, 500, { success: false, error: err.message || "Failed to add short." });
     }
   });
-  
 
+  app.put("/api/youtube/shorts/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { title, shortUrl, userUid } = req.body;
+      if (!title || !shortUrl) {
+        return helperResponseJson(res, 400, { success: false, error: "Title and Shorts URL are required." });
+      }
+      if (userUid) {
+        const isAdmin = await verifyAdminRole(userUid);
+        if (!isAdmin) {
+          return helperResponseJson(res, 403, { success: false, error: "Forbidden: Admin privileges required." });
+        }
+      }
 
+      const videoId = getYouTubeId(shortUrl);
+      if (!videoId) {
+        return helperResponseJson(res, 400, { success: false, error: "Invalid YouTube Shorts URL format." });
+      }
+
+      const updatedDoc = {
+        title: title.trim(),
+        shortUrl: shortUrl.trim(),
+        videoId,
+        thumbnail: `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`
+      };
+
+      if (db) {
+        let targetDocId = id;
+        const directDoc = doc(db, "manual_youtube_shorts", id);
+        const directSnap = await getDoc(directDoc);
+        if (!directSnap.exists()) {
+          const q = query(collection(db, "manual_youtube_shorts"), where("videoId", "==", id));
+          const querySnap = await getDocs(q);
+          if (!querySnap.empty) {
+            targetDocId = querySnap.docs[0].id;
+          }
+        }
+        await setDoc(doc(db, "manual_youtube_shorts", targetDocId), updatedDoc, { merge: true });
+      } else {
+        const idx = manualShorts.findIndex(s => s.id === id || s.videoId === id);
+        if (idx !== -1) {
+          manualShorts[idx] = { ...manualShorts[idx], ...updatedDoc };
+        }
+      }
+
+      return helperResponseJson(res, 200, { success: true, message: "Short updated successfully!" });
+    } catch (err: any) {
+      console.error("Error updating short:", err);
+      return helperResponseJson(res, 500, { success: false, error: err.message || "Failed to update short." });
+    }
+  });
+
+  app.delete("/api/youtube/shorts/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { userUid } = req.body;
+      if (userUid) {
+        const isAdmin = await verifyAdminRole(userUid);
+        if (!isAdmin) {
+          return helperResponseJson(res, 403, { success: false, error: "Forbidden: Admin privileges required." });
+        }
+      }
+
+      if (db) {
+        let targetDocId = id;
+        const directDoc = doc(db, "manual_youtube_shorts", id);
+        const directSnap = await getDoc(directDoc);
+        if (!directSnap.exists()) {
+          const q = query(collection(db, "manual_youtube_shorts"), where("videoId", "==", id));
+          const querySnap = await getDocs(q);
+          if (!querySnap.empty) {
+            targetDocId = querySnap.docs[0].id;
+          }
+        }
+        await deleteDoc(doc(db, "manual_youtube_shorts", targetDocId));
+      } else {
+        manualShorts = manualShorts.filter(s => s.id !== id && s.videoId !== id);
+      }
+
+      return helperResponseJson(res, 200, { success: true, message: "Short deleted successfully!" });
+    } catch (err: any) {
+      console.error("Error deleting short:", err);
+      return helperResponseJson(res, 500, { success: false, error: err.message || "Failed to delete short." });
+    }
+  });
+
+  // 4. Live Streams CRUD Endpoints
+  app.get("/api/youtube/live", async (req, res) => {
+    try {
+      let list: any[] = [];
+      if (db) {
+        const snap = await getDocs(collection(db, "manual_youtube_live"));
+        snap.forEach((doc) => {
+          list.push({ id: doc.id, ...doc.data() });
+        });
+        list.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+        manualLives = list;
+      } else {
+        list = manualLives;
+      }
+
+      // If requested raw list (e.g. from the Admin Dashboard forms)
+      if (req.query.raw === "true") {
+        return helperResponseJson(res, 200, list.map(item => ({
+          ...item,
+          id: item.videoId || item.id
+        })));
+      }
+
+      // Default status-based response for YouTubeTab client view
+      if (list.length === 0) {
+        return helperResponseJson(res, 200, {
+          isLive: false,
+          activeLive: null,
+          upcomingStreams: [],
+          pastLiveStreams: []
+        });
+      }
+
+      const activeItem = list[0];
+      const activeLive = {
+        id: activeItem.videoId || activeItem.id,
+        title: activeItem.title,
+        description: "Live tournament stream coverage.",
+        thumbnail: activeItem.thumbnail || `https://img.youtube.com/vi/${activeItem.videoId}/mqdefault.jpg`,
+        publishedAt: activeItem.createdAt || new Date().toISOString(),
+        viewerCount: activeItem.viewerCount || 135
+      };
+
+      const upcomingStreams = list.slice(1).map(item => ({
+        id: item.videoId || item.id,
+        title: item.title,
+        description: "Upcoming scheduled live coverage.",
+        thumbnail: item.thumbnail || `https://img.youtube.com/vi/${item.videoId}/mqdefault.jpg`,
+        publishedAt: item.createdAt || new Date().toISOString()
+      }));
+
+      return helperResponseJson(res, 200, {
+        isLive: true,
+        activeLive,
+        upcomingStreams,
+        pastLiveStreams: []
+      });
+    } catch (err: any) {
+      console.error("Error getting manual live streams:", err);
+      return helperResponseJson(res, 200, {
+        isLive: false,
+        activeLive: null,
+        upcomingStreams: [],
+        pastLiveStreams: []
+      });
+    }
+  });
+
+  app.post("/api/youtube/live", async (req, res) => {
+    try {
+      const { title, liveUrl, userUid } = req.body;
+      if (!title || !liveUrl) {
+        return helperResponseJson(res, 400, { success: false, error: "Title and Live URL are required." });
+      }
+      if (userUid) {
+        const isAdmin = await verifyAdminRole(userUid);
+        if (!isAdmin) {
+          return helperResponseJson(res, 403, { success: false, error: "Forbidden: Admin privileges required." });
+        }
+      }
+
+      const videoId = getYouTubeId(liveUrl);
+      if (!videoId) {
+        return helperResponseJson(res, 400, { success: false, error: "Invalid YouTube Live URL format." });
+      }
+
+      const liveDoc = {
+        title: title.trim(),
+        liveUrl: liveUrl.trim(),
+        videoId,
+        thumbnail: `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`,
+        createdAt: new Date().toISOString()
+      };
+
+      let savedId = "live_" + Date.now();
+      if (db) {
+        const docRef = await addDoc(collection(db, "manual_youtube_live"), liveDoc);
+        savedId = docRef.id;
+      } else {
+        manualLives.unshift({ id: savedId, ...liveDoc });
+      }
+
+      return helperResponseJson(res, 200, { success: true, message: "Live stream added successfully!", id: savedId });
+    } catch (err: any) {
+      console.error("Error adding live stream:", err);
+      return helperResponseJson(res, 500, { success: false, error: err.message || "Failed to add live stream." });
+    }
+  });
+
+  app.put("/api/youtube/live/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { title, liveUrl, userUid } = req.body;
+      if (!title || !liveUrl) {
+        return helperResponseJson(res, 400, { success: false, error: "Title and Live URL are required." });
+      }
+      if (userUid) {
+        const isAdmin = await verifyAdminRole(userUid);
+        if (!isAdmin) {
+          return helperResponseJson(res, 403, { success: false, error: "Forbidden: Admin privileges required." });
+        }
+      }
+
+      const videoId = getYouTubeId(liveUrl);
+      if (!videoId) {
+        return helperResponseJson(res, 400, { success: false, error: "Invalid YouTube Live URL format." });
+      }
+
+      const updatedDoc = {
+        title: title.trim(),
+        liveUrl: liveUrl.trim(),
+        videoId,
+        thumbnail: `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`
+      };
+
+      if (db) {
+        let targetDocId = id;
+        const directDoc = doc(db, "manual_youtube_live", id);
+        const directSnap = await getDoc(directDoc);
+        if (!directSnap.exists()) {
+          const q = query(collection(db, "manual_youtube_live"), where("videoId", "==", id));
+          const querySnap = await getDocs(q);
+          if (!querySnap.empty) {
+            targetDocId = querySnap.docs[0].id;
+          }
+        }
+        await setDoc(doc(db, "manual_youtube_live", targetDocId), updatedDoc, { merge: true });
+      } else {
+        const idx = manualLives.findIndex(l => l.id === id || l.videoId === id);
+        if (idx !== -1) {
+          manualLives[idx] = { ...manualLives[idx], ...updatedDoc };
+        }
+      }
+
+      return helperResponseJson(res, 200, { success: true, message: "Live stream updated successfully!" });
+    } catch (err: any) {
+      console.error("Error updating live stream:", err);
+      return helperResponseJson(res, 500, { success: false, error: err.message || "Failed to update live stream." });
+    }
+  });
+
+  app.delete("/api/youtube/live/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { userUid } = req.body;
+      if (userUid) {
+        const isAdmin = await verifyAdminRole(userUid);
+        if (!isAdmin) {
+          return helperResponseJson(res, 403, { success: false, error: "Forbidden: Admin privileges required." });
+        }
+      }
+
+      if (db) {
+        let targetDocId = id;
+        const directDoc = doc(db, "manual_youtube_live", id);
+        const directSnap = await getDoc(directDoc);
+        if (!directSnap.exists()) {
+          const q = query(collection(db, "manual_youtube_live"), where("videoId", "==", id));
+          const querySnap = await getDocs(q);
+          if (!querySnap.empty) {
+            targetDocId = querySnap.docs[0].id;
+          }
+        }
+        await deleteDoc(doc(db, "manual_youtube_live", targetDocId));
+      } else {
+        manualLives = manualLives.filter(l => l.id !== id && l.videoId !== id);
+      }
+
+      return helperResponseJson(res, 200, { success: true, message: "Live stream deleted successfully!" });
+    } catch (err: any) {
+      console.error("Error deleting live stream:", err);
+      return helperResponseJson(res, 500, { success: false, error: err.message || "Failed to delete live stream." });
+    }
+  });
+
+  // End of replace placeholder
   // Fetch Payment configuration (Manual QR, UPI and automatic gateway merchant values)
   app.get("/api/payments/config", async (req, res) => {
     try {
