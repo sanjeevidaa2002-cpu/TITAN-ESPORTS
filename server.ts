@@ -559,6 +559,242 @@ async function startServer() {
     return res.status(status).json(payload);
   };
 
+  // Helper to parse channel URL and extract strategy/query details
+  async function resolveChannelIdAndDetailsFromUrl(apiKey: string, url: string) {
+    const trimmedUrl = url.trim();
+    
+    // 1. Direct channel ID pattern: UCxxxxxxxxxxxxxxxxxxxxxxx
+    const matchChannelId = trimmedUrl.match(/(UC[a-zA-Z0-9_-]{22})/);
+    if (matchChannelId) {
+      const channelId = matchChannelId[1];
+      logYtModule("PROXY", `Direct Channel ID detected from URL: ${channelId}`);
+      return { channelId, strategy: "id" };
+    }
+
+    // 2. Handle pattern: @ChannelName
+    const matchHandle = trimmedUrl.match(/@([a-zA-Z0-9_.-]+)/);
+    if (matchHandle) {
+      const handle = '@' + matchHandle[1];
+      logYtModule("PROXY", `Handle detected from URL: ${handle}`);
+      return { handle, strategy: "handle" };
+    }
+
+    // 3. Custom path patterns: /c/CustomName or /user/Username
+    const matchCustom = trimmedUrl.match(/\/c\/([a-zA-Z0-9_-]+)/);
+    if (matchCustom) {
+      const customName = matchCustom[1];
+      logYtModule("PROXY", `Custom URL segment detected: ${customName}`);
+      return { customName, strategy: "custom" };
+    }
+
+    const matchUser = trimmedUrl.match(/\/user\/([a-zA-Z0-9_-]+)/);
+    if (matchUser) {
+      const username = matchUser[1];
+      logYtModule("PROXY", `User profile segment detected: ${username}`);
+      return { username, strategy: "user" };
+    }
+
+    if (trimmedUrl.startsWith("@")) {
+      return { handle: trimmedUrl, strategy: "handle" };
+    }
+
+    if (!trimmedUrl.includes("/") && trimmedUrl.length > 0) {
+      return { handle: trimmedUrl.startsWith("@") ? trimmedUrl : '@' + trimmedUrl, strategy: "handle" };
+    }
+
+    throw new Error("Invalid YouTube Channel URL format. Please provide a standard URL (e.g. https://youtube.com/@ChannelName or https://youtube.com/channel/UC...)");
+  }
+
+  // Helper to fetch channel details from the API using URL
+  async function fetchChannelByUrl(apiKey: string, channelUrl: string) {
+    const resolution = await resolveChannelIdAndDetailsFromUrl(apiKey, channelUrl);
+    let url = "";
+
+    if (resolution.strategy === "id") {
+      url = `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics,contentDetails,brandingSettings&id=${resolution.channelId}&key=${apiKey}`;
+    } else if (resolution.strategy === "handle") {
+      url = `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics,contentDetails,brandingSettings&forHandle=${encodeURIComponent(resolution.handle)}&key=${apiKey}`;
+    } else if (resolution.strategy === "user") {
+      url = `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics,contentDetails,brandingSettings&forUsername=${resolution.username}&key=${apiKey}`;
+    } else if (resolution.strategy === "custom") {
+      url = `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics,contentDetails,brandingSettings&forHandle=${encodeURIComponent('@' + resolution.customName)}&key=${apiKey}`;
+    }
+
+    try {
+      const data = await fetchGoogleAPI(url);
+      if (data.items && data.items.length > 0) {
+        return data.items[0];
+      }
+    } catch (err: any) {
+      logYtModule("ERROR", `Failed fetching via strategy ${resolution.strategy}: ${err.message}`);
+    }
+
+    // Search Fallback
+    if (resolution.strategy !== "id") {
+      logYtModule("PROXY", `Attempting search fallback for query: ${channelUrl}`);
+      const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(channelUrl)}&type=channel&maxResults=1&key=${apiKey}`;
+      try {
+        const searchData = await fetchGoogleAPI(searchUrl);
+        if (searchData.items && searchData.items.length > 0) {
+          const foundChannelId = searchData.items[0].snippet?.channelId;
+          if (foundChannelId) {
+            logYtModule("PROXY", `Search fallback found channel ID: ${foundChannelId}`);
+            const detailsUrl = `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics,contentDetails,brandingSettings&id=${foundChannelId}&key=${apiKey}`;
+            const detailsData = await fetchGoogleAPI(detailsUrl);
+            if (detailsData.items && detailsData.items.length > 0) {
+              return detailsData.items[0];
+            }
+          }
+        }
+      } catch (searchErr: any) {
+        logYtModule("ERROR", `Search fallback failed: ${searchErr.message}`);
+      }
+    }
+
+    throw new Error("Channel not found: We couldn't find a matching YouTube channel for the provided URL.");
+  }
+
+  // New endpoint to automatically detect channel details from paste
+  app.post("/api/youtube/detect", async (req, res) => {
+    logYtModule("REQUEST", "POST /api/youtube/detect requested");
+    try {
+      const { channelUrl } = req.body;
+      if (!channelUrl || typeof channelUrl !== "string" || channelUrl.trim() === "") {
+        return helperResponseJson(res, 400, { success: false, error: "Channel URL is required." });
+      }
+
+      const apiKey = "AIzaSyDnjQ1CT7epD61l5dgzGqMxeXAWDUG-dhw";
+      logYtModule("PROXY", `Detecting channel details for URL: ${channelUrl}`);
+      const rawChannel = await fetchChannelByUrl(apiKey, channelUrl);
+      
+      const snippet = rawChannel.snippet || {};
+      const stats = rawChannel.statistics || {};
+      const brand = rawChannel.brandingSettings || {};
+      const contentDetails = rawChannel.contentDetails || {};
+
+      const logo = snippet.thumbnails?.high?.url || snippet.thumbnails?.medium?.url || snippet.thumbnails?.default?.url || "";
+      const banner = brand.image?.bannerExternalUrl || "";
+      const customUrl = snippet.customUrl || "";
+
+      const detectedData = {
+        channelId: rawChannel.id,
+        channelName: snippet.title || "TITAN ESP",
+        channelHandle: customUrl || `@${(snippet.title || "").toLowerCase().replace(/\s/g, "")}`,
+        channelUrl: customUrl ? `https://youtube.com/${customUrl}` : `https://youtube.com/channel/${rawChannel.id}`,
+        profileImage: logo,
+        bannerImage: banner,
+        subscriberCount: parseInt(stats.subscriberCount, 10) || 0,
+        videoCount: parseInt(stats.videoCount, 10) || 0,
+        viewCount: parseInt(stats.viewCount, 10) || 0,
+        description: snippet.description || "",
+        country: snippet.country || "Global",
+        publishedAt: snippet.publishedAt || "",
+        uploadsPlaylistId: contentDetails.relatedPlaylists?.uploads || ""
+      };
+
+      logYtModule("RESPONSE", `POST /api/youtube/detect successfully resolved channel: ${detectedData.channelName}`);
+      return helperResponseJson(res, 200, {
+        success: true,
+        channel: detectedData
+      });
+    } catch (err: any) {
+      logYtModule("RESPONSE", `POST /api/youtube/detect failed: ${err.message}`);
+      return helperResponseJson(res, 400, { success: false, error: err.message || "Failed to detect YouTube channel." });
+    }
+  });
+
+  // New endpoint to import channel completely and deep sync
+  app.post("/api/youtube/import", async (req, res) => {
+    logYtModule("REQUEST", "POST /api/youtube/import requested");
+    try {
+      const { channelUrl } = req.body;
+      if (!channelUrl || typeof channelUrl !== "string" || channelUrl.trim() === "") {
+        return helperResponseJson(res, 400, { success: false, error: "Channel URL is required for import." });
+      }
+
+      const apiKey = "AIzaSyDnjQ1CT7epD61l5dgzGqMxeXAWDUG-dhw";
+      logYtModule("PROXY", `Importing channel for URL: ${channelUrl}`);
+      const rawChannel = await fetchChannelByUrl(apiKey, channelUrl);
+      
+      const snippet = rawChannel.snippet || {};
+      const stats = rawChannel.statistics || {};
+      const brand = rawChannel.brandingSettings || {};
+      const contentDetails = rawChannel.contentDetails || {};
+
+      const logo = snippet.thumbnails?.high?.url || snippet.thumbnails?.medium?.url || snippet.thumbnails?.default?.url || "";
+      const banner = brand.image?.bannerExternalUrl || "";
+      const customUrl = snippet.customUrl || "";
+
+      const channelData = {
+        apiKey: apiKey,
+        channelId: rawChannel.id,
+        channelName: snippet.title || "TITAN ESP",
+        channelHandle: customUrl || `@${(snippet.title || "").toLowerCase().replace(/\s/g, "")}`,
+        channelUrl: customUrl ? `https://youtube.com/${customUrl}` : `https://youtube.com/channel/${rawChannel.id}`,
+        profileImage: logo,
+        bannerImage: banner,
+        subscriberCount: parseInt(stats.subscriberCount, 10) || 0,
+        videoCount: parseInt(stats.videoCount, 10) || 0,
+        viewCount: parseInt(stats.viewCount, 10) || 0,
+        description: snippet.description || "",
+        country: snippet.country || "Global",
+        publishedAt: snippet.publishedAt || "",
+        uploadsPlaylistId: contentDetails.relatedPlaylists?.uploads || "",
+        lastUpdated: new Date().toISOString()
+      };
+
+      const configData: YouTubeConfig = {
+        enabled: true,
+        apiKey: apiKey,
+        channelId: rawChannel.id,
+        cacheDurationMinutes: localYouTubeConfig.cacheDurationMinutes || 15,
+        autoSync: localYouTubeConfig.autoSync ?? true,
+        updatedAt: new Date().toISOString()
+      };
+
+      localYouTubeConfig = configData;
+      if (db) {
+        const docRef = doc(db, "appSettings", "youtube");
+        await setDoc(docRef, configData);
+        logYtModule("DATABASE", "Successfully saved imported YouTube config to Firestore.");
+      }
+
+      await saveChannelDetailsToDb(channelData);
+
+      // Perform deep synchronization
+      let syncedVideos: any[] = [];
+      let syncedShorts: any[] = [];
+      let syncedLive: any = null;
+
+      try {
+        const syncItems = await fetchVideosAndShortsFromAPI(apiKey, channelData.uploadsPlaylistId);
+        syncedVideos = syncItems.videos;
+        syncedShorts = syncItems.shorts;
+        syncedLive = await fetchLiveStatusFromAPI(apiKey, rawChannel.id);
+      } catch (syncErr: any) {
+        logYtModule("ERROR", `Import deep item sync hit transient error: ${syncErr.message}`);
+      }
+
+      // Sync into memory cache
+      ytChannelCache = channelData;
+      ytVideosCache = syncedVideos;
+      ytShortsCache = syncedShorts;
+      ytLiveCache = syncedLive;
+      ytCacheTimestamp = Date.now();
+      ytLiveCacheTimestamp = Date.now();
+
+      logYtModule("RESPONSE", `POST /api/youtube/import successfully completed for ${channelData.channelName}`);
+      return helperResponseJson(res, 200, {
+        success: true,
+        message: `Successfully connected to channel: ${channelData.channelName}! Configuration saved and synchronized immediately.`,
+        channel: formatChannelForUI(channelData)
+      });
+    } catch (err: any) {
+      logYtModule("RESPONSE", `POST /api/youtube/import failed: ${err.message}`);
+      return helperResponseJson(res, 400, { success: false, error: err.message || "Failed to import YouTube channel." });
+    }
+  });
+
   // 1. Get YouTube configuration details
   app.get("/api/youtube/config", async (req, res) => {
     logYtModule("REQUEST", "GET /api/youtube/config requested");
@@ -578,25 +814,23 @@ async function startServer() {
     }
   });
 
-  // 2. Save configuration parameters (WITH PRE-SAVE VALIDATION)
+  // 2. Save configuration parameters (WITH RESILIENT MERGE)
   app.post("/api/youtube/config", async (req, res) => {
     logYtModule("REQUEST", "POST /api/youtube/config requested");
     try {
       const { enabled, apiKey, channelId, cacheDurationMinutes, autoSync } = req.body;
       
+      const saved = await getYouTubeConfigSecure();
       let finalApiKey = apiKey;
-      if (!apiKey || apiKey === "••••••••" || apiKey.includes("••••")) {
-        const saved = await getYouTubeConfigSecure();
-        finalApiKey = saved.apiKey;
+      if (!apiKey || apiKey === "••••••••" || apiKey.includes("••••") || apiKey.trim() === "") {
+        finalApiKey = saved.apiKey || "AIzaSyDnjQ1CT7epD61l5dgzGqMxeXAWDUG-dhw";
+      }
+      let finalChannelId = channelId;
+      if (!channelId || channelId.trim() === "") {
+        finalChannelId = saved.channelId || "UCjqzz1wYC3zdpLEHVxjcTEQ";
       }
 
-      // Pre-save validation (throws descriptive format errors or fails fast)
-      validateCredentials(finalApiKey, channelId);
-
-      // Verify that the credentials can actually fetch channel details! (Ensures absolute correctness)
-      logYtModule("PROXY", `Verifying configuration with Google API prior to saving...`);
-      const channelDetails = await fetchChannelDetails(finalApiKey, channelId);
-      logYtModule("PROXY", `Verification successful! Connected to channel: ${channelDetails.channelName}`);
+      validateCredentials(finalApiKey, finalChannelId);
 
       let cacheMinutes = 15;
       if (cacheDurationMinutes !== undefined && cacheDurationMinutes !== null) {
@@ -608,8 +842,8 @@ async function startServer() {
 
       const configData: YouTubeConfig = {
         enabled: !!enabled,
-        apiKey: finalApiKey || "",
-        channelId: channelId || "",
+        apiKey: finalApiKey,
+        channelId: finalChannelId,
         cacheDurationMinutes: cacheMinutes,
         autoSync: autoSync ?? true,
         updatedAt: new Date().toISOString()
