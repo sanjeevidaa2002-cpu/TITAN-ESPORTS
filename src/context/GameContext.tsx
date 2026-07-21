@@ -234,14 +234,14 @@ const DEFAULT_LOADING_SCREEN: LoadingScreenSettings = {
         wlcSnap,
         tUpcomingSnap
       ] = await Promise.all([
-        getDocs(collection(db, 'tournaments')).catch(err => { console.error("Error reading tournaments:", err); throw err; }),
-        getDoc(doc(db, 'registrations', 'REG-882930')).catch(err => { console.error("Error reading registration:", err); throw err; }),
-        getDocs(collection(db, 'leaderboard')).catch(err => { console.error("Error reading leaderboard:", err); throw err; }),
-        getDocs(collection(db, 'notifications')).catch(err => { console.error("Error reading notifications:", err); throw err; }),
-        getDocs(collection(db, 'categories')).catch(err => { console.error("Error reading categories:", err); throw err; }),
-        getDocs(collection(db, 'weekly_players')).catch(err => { console.error("Error reading weekly_players:", err); throw err; }),
-        getDoc(doc(db, 'settings', 'weekly_leaderboard')).catch(err => { console.error("Error reading settings/weekly_leaderboard:", err); throw err; }),
-        getDoc(doc(db, 'tournaments', 't_upcoming_1')).catch(err => { console.error("Error reading tournaments/t_upcoming_1:", err); throw err; })
+        getDocs(collection(db, 'tournaments')).catch(err => { console.warn("Notice reading tournaments:", err); return { empty: true, docs: [] } as any; }),
+        getDoc(doc(db, 'registrations', 'REG-882930')).catch(err => { console.warn("Notice reading registration:", err); return { exists: () => false, data: () => null } as any; }),
+        getDocs(collection(db, 'leaderboard')).catch(err => { console.warn("Notice reading leaderboard:", err); return { empty: true, docs: [] } as any; }),
+        getDocs(collection(db, 'notifications')).catch(err => { console.warn("Notice reading notifications:", err); return { empty: true, docs: [] } as any; }),
+        getDocs(collection(db, 'categories')).catch(err => { console.warn("Notice reading categories:", err); return { empty: true, docs: [] } as any; }),
+        getDocs(collection(db, 'weekly_players')).catch(err => { console.warn("Notice reading weekly_players:", err); return { empty: true, docs: [] } as any; }),
+        getDoc(doc(db, 'settings', 'weekly_leaderboard')).catch(err => { console.warn("Notice reading settings/weekly_leaderboard:", err); return { exists: () => false, data: () => null } as any; }),
+        getDoc(doc(db, 'tournaments', 't_upcoming_1')).catch(err => { console.warn("Notice reading tournaments/t_upcoming_1:", err); return { exists: () => false, data: () => null } as any; })
       ]);
       console.log("[GameContext] Initial document checks complete.");
 

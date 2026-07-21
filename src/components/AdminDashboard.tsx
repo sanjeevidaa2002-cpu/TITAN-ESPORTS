@@ -142,7 +142,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
 
   // States
   const [sidebarCollapsed, setSidebarCollapsed] = useState(window.innerWidth < 1200);
-  const [activeTab, setActiveTab] = useState<'overview' | 'users' | 'tournaments' | 'players' | 'wallet' | 'promo_announcements' | 'settings_security' | 'youtube_management' | 'registrations' | 'payment_approval' | 'website_branding' | 'support_settings' | 'loading_page_manager' | 'game_categories' | 'weekly_leaderboard_manager' | 'winnings_manager' | 'banner_management' | 'bonus_management' | 'storage_manager' | 'auth_providers'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'users' | 'tournaments' | 'players' | 'wallet' | 'promo_announcements' | 'settings_security' | 'youtube_api_import' | 'registrations' | 'payment_approval' | 'website_branding' | 'support_settings' | 'loading_page_manager' | 'game_categories' | 'weekly_leaderboard_manager' | 'winnings_manager' | 'banner_management' | 'bonus_management' | 'storage_manager' | 'auth_providers'>('overview');
   const [dbUsers, setDbUsers] = useState<UserProfile[]>([]);
   const [dbTransactions, setDbTransactions] = useState<Transaction[]>([]);
   const [loadingUsers, setLoadingUsers] = useState(true);
@@ -224,150 +224,52 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     });
   };
 
-  // YouTube admin states & handlers (Manual Management System)
-  const [ytConfig, setYtConfig] = useState({
+  // YouTube API Integration is the exclusive management system
+
+
+  // YouTube API Import states
+  const [ytApiConfig, setYtApiConfig] = useState({
     enabled: false,
     apiKey: '',
     channelId: '',
-    cacheDurationMinutes: 15,
-    autoSync: true
   });
-  const [ytChannelUrl, setYtChannelUrl] = useState('');
-  const [ytChannelInfo, setYtChannelInfo] = useState<any>(null);
-  const [ytLiveInfo, setYtLiveInfo] = useState<any>(null);
-  const [ytVideos, setYtVideos] = useState<any[]>([]);
-  const [ytShorts, setYtShorts] = useState<any[]>([]);
-  const [ytLives, setYtLives] = useState<any[]>([]);
-  const [loadingYt, setLoadingYt] = useState(false);
-  const [ytTestStatus, setYtTestStatus] = useState<{ success?: boolean; message?: string } | null>(null);
+  const [ytApiChannelInfo, setYtApiChannelInfo] = useState<any>(null);
+  const [loadingYtApi, setLoadingYtApi] = useState(false);
+  const [ytApiTestStatus, setYtApiTestStatus] = useState<{ success?: boolean; message?: string } | null>(null);
+  const [ytApiImportStatus, setYtApiImportStatus] = useState<string | null>(null);
 
-  // Manual YouTube CRUD States
-  const [editingVideo, setEditingVideo] = useState<any>(null);
-  const [newVideo, setNewVideo] = useState({ title: '', videoUrl: '', thumbnail: '', description: '' });
-  
-  const [editingShort, setEditingShort] = useState<any>(null);
-  const [newShort, setNewShort] = useState({ title: '', shortUrl: '' });
-
-  const [editingLive, setEditingLive] = useState<any>(null);
-  const [newLive, setNewLive] = useState({ title: '', liveUrl: '' });
-
-  const handleExitConsole = () => {
-    sessionStorage.removeItem('admin_logged_in');
-    sessionStorage.removeItem('admin_2fa_verified');
-    setIsAdminLoggedIn(false);
-    onBack();
-  };
-
-  useEffect(() => {
-    if (activeTab === 'youtube_management') {
-      loadYtAdminData();
-    }
-  }, [activeTab]);
-
-  const loadYtAdminData = async () => {
-    setLoadingYt(true);
-    setYtTestStatus(null);
+  const loadYtApiAdminData = async () => {
+    if (!currentUser?.uid) return;
+    setLoadingYtApi(true);
+    setYtApiTestStatus(null);
     try {
       // 1. Fetch Config
-      const configRes = await fetch('/api/youtube/config');
+      const configRes = await fetch(`/api/youtube/api-import/config?userUid=${currentUser.uid}`);
       if (configRes.ok) {
         const configData = await configRes.json();
-        setYtConfig({
-          enabled: configData.enabled || false,
-          apiKey: '',
-          channelId: configData.channelId || '',
-          cacheDurationMinutes: 15,
-          autoSync: false
-        });
+        if (configData.success && configData.config) {
+          setYtApiConfig({
+            enabled: configData.config.enabled || false,
+            apiKey: configData.config.apiKey || '',
+            channelId: configData.config.channelId || '',
+          });
+        }
       }
 
       // 2. Fetch Channel Info
       const channelRes = await fetch('/api/youtube/channel');
       if (channelRes.ok) {
         const rawChannel = await channelRes.json();
-        if (rawChannel) {
-          setYtChannelInfo({
-            id: rawChannel.channelUrl || "",
-            title: rawChannel.channelName || "TITAN ESP",
-            logo: rawChannel.profileImage || "",
-            subscribers: rawChannel.subscriberCount || "0",
-            views: "N/A",
-            videosCount: "N/A",
-            country: 'Global',
-            channelUrl: rawChannel.channelUrl || "",
-            banner: rawChannel.bannerImage || ""
-          });
-          setYtChannelUrl(rawChannel.channelUrl || "");
+        if (rawChannel && rawChannel.channelId) {
+          setYtApiChannelInfo(rawChannel);
         } else {
-          setYtChannelInfo(null);
-        }
-      }
-
-      // 3. Fetch Videos
-      const videosRes = await fetch('/api/youtube/videos');
-      if (videosRes.ok) {
-        setYtVideos(await videosRes.json());
-      }
-
-      // 4. Fetch Shorts
-      const shortsRes = await fetch('/api/youtube/shorts');
-      if (shortsRes.ok) {
-        setYtShorts(await shortsRes.json());
-      }
-
-      // 5. Fetch Live Streams
-      const liveRes = await fetch('/api/youtube/live?raw=true');
-      if (liveRes.ok) {
-        const livesList = await liveRes.json();
-        const safeList = Array.isArray(livesList) ? livesList : [];
-        setYtLives(safeList);
-        
-        // Populate standard ytLiveInfo for backward compatibility
-        if (safeList.length > 0) {
-          setYtLiveInfo({
-            isLive: true,
-            activeLive: {
-              id: safeList[0].videoId,
-              title: safeList[0].title,
-              thumbnail: safeList[0].thumbnail,
-              publishedAt: safeList[0].createdAt || new Date().toISOString(),
-              viewerCount: "0"
-            }
-          });
-        } else {
-          setYtLiveInfo(null);
+          setYtApiChannelInfo(null);
         }
       }
     } catch (err) {
-      console.warn("Error loading YT Admin data:", err);
+      console.warn("Error loading YT API data:", err);
     } finally {
-      setLoadingYt(false);
-    }
-  };
-
-  const handleSaveYtConfig = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    setLoadingYt(true);
-    try {
-      const res = await fetch('/api/youtube/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          enabled: ytConfig.enabled,
-          userUid: currentUser?.uid
-        })
-      });
-      const data = await res.json();
-      if (res.ok) {
-        alert("YouTube integration settings saved successfully!");
-        loadYtAdminData();
-      } else {
-        throw new Error(data.error || "Failed to save settings.");
-      }
-    } catch (err: any) {
-      alert("Error: " + err.message);
-    } finally {
-      setLoadingYt(false);
+      setLoadingYtApi(false);
     }
   };
 
@@ -385,315 +287,261 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     return await res.json();
   };
 
-  const handleImportChannel = async () => {
-    if (!ytChannelUrl || ytChannelUrl.trim() === "") {
-      alert("Please enter a YouTube Channel URL to import.");
+  const handleTestApiConnection = async () => {
+    if (!ytApiConfig.apiKey || !ytApiConfig.channelId) {
+      alert("Please enter both YouTube Data API v3 API Key and Channel ID.");
       return;
     }
-    setLoadingYt(true);
-    setYtTestStatus(null);
+    setLoadingYtApi(true);
+    setYtApiTestStatus(null);
     try {
-      const res = await fetch("/api/youtube/import", {
+      const res = await fetch("/api/youtube/api-import/test", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ channelUrl: ytChannelUrl.trim(), userUid: currentUser?.uid })
+        body: JSON.stringify({
+          apiKey: ytApiConfig.apiKey.trim(),
+          channelId: ytApiConfig.channelId.trim(),
+          userUid: currentUser?.uid
+        })
       });
       const data = await safeFetchJson(res);
       if (res.ok) {
-        alert("YouTube channel connected and imported successfully!");
-        setYtTestStatus({
+        setYtApiTestStatus({
           success: true,
-          message: `Imported successfully: ${data.channel?.channelName || "Channel"}`
+          message: data.message || "Connection test passed successfully!"
         });
-        loadYtAdminData();
       } else {
-        throw new Error(data.error || "Failed to import YouTube channel.");
+        setYtApiTestStatus({
+          success: false,
+          message: data.error || "Connection test failed."
+        });
       }
     } catch (err: any) {
-      setYtTestStatus({
+      setYtApiTestStatus({
         success: false,
-        message: err.message || "Failed to import YouTube channel."
+        message: err.message || "Network Error"
       });
-      alert("Import Error: " + err.message);
     } finally {
-      setLoadingYt(false);
+      setLoadingYtApi(false);
     }
   };
 
-  const handleDisconnectYt = async () => {
-    if (!window.confirm("Are you sure you want to disconnect this YouTube Channel? This will clear all manual details and disable integration.")) {
+  const handleConnectApiChannel = async () => {
+    if (!ytApiConfig.apiKey || !ytApiConfig.channelId) {
+      alert("Please enter both YouTube Data API v3 API Key and Channel ID.");
       return;
     }
-    setLoadingYt(true);
+    setLoadingYtApi(true);
+    setYtApiTestStatus(null);
     try {
-      const res = await fetch('/api/youtube/disconnect', {
+      const res = await fetch("/api/youtube/api-import/connect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          apiKey: ytApiConfig.apiKey.trim(),
+          channelId: ytApiConfig.channelId.trim(),
+          userUid: currentUser?.uid
+        })
+      });
+      const data = await safeFetchJson(res);
+      if (res.ok) {
+        alert("YouTube Channel connected successfully under API mode!");
+        loadYtApiAdminData();
+      } else {
+        alert("Connection failed: " + (data.error || "Server error"));
+      }
+    } catch (err: any) {
+      alert("Connection error: " + err.message);
+    } finally {
+      setLoadingYtApi(false);
+    }
+  };
+
+  const handleImportApiChannelDetails = async () => {
+    setLoadingYtApi(true);
+    setYtApiImportStatus("Importing channel metadata...");
+    try {
+      const res = await fetch("/api/youtube/api-import/channel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userUid: currentUser?.uid })
+      });
+      const data = await safeFetchJson(res);
+      if (res.ok) {
+        alert("YouTube Channel metadata updated successfully!");
+        loadYtApiAdminData();
+      } else {
+        alert("Import failed: " + (data.error || "Server error"));
+      }
+    } catch (err: any) {
+      alert("Import error: " + err.message);
+    } finally {
+      setLoadingYtApi(false);
+      setYtApiImportStatus(null);
+    }
+  };
+
+  const handleImportApiVideos = async () => {
+    setLoadingYtApi(true);
+    setYtApiImportStatus("Scanning uploads for regular videos...");
+    try {
+      const res = await fetch("/api/youtube/api-import/import-videos", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userUid: currentUser?.uid })
+      });
+      const data = await safeFetchJson(res);
+      if (res.ok) {
+        alert(data.message || "Videos imported successfully!");
+      } else {
+        alert("Import failed: " + (data.error || "Server error"));
+      }
+    } catch (err: any) {
+      alert("Import error: " + err.message);
+    } finally {
+      setLoadingYtApi(false);
+      setYtApiImportStatus(null);
+    }
+  };
+
+  const handleImportApiShorts = async () => {
+    setLoadingYtApi(true);
+    setYtApiImportStatus("Scanning uploads for short clips...");
+    try {
+      const res = await fetch("/api/youtube/api-import/import-shorts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userUid: currentUser?.uid })
+      });
+      const data = await safeFetchJson(res);
+      if (res.ok) {
+        alert(data.message || "Shorts imported successfully!");
+      } else {
+        alert("Import failed: " + (data.error || "Server error"));
+      }
+    } catch (err: any) {
+      alert("Import error: " + err.message);
+    } finally {
+      setLoadingYtApi(false);
+      setYtApiImportStatus(null);
+    }
+  };
+
+  const handleImportApiLiveStreams = async () => {
+    setLoadingYtApi(true);
+    setYtApiImportStatus("Searching for live broadcasts...");
+    try {
+      const res = await fetch("/api/youtube/api-import/import-live", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userUid: currentUser?.uid })
+      });
+      const data = await safeFetchJson(res);
+      if (res.ok) {
+        alert(data.message || "Live streams scan completed!");
+      } else {
+        alert("Scan failed: " + (data.error || "Server error"));
+      }
+    } catch (err: any) {
+      alert("Scan error: " + err.message);
+    } finally {
+      setLoadingYtApi(false);
+      setYtApiImportStatus(null);
+    }
+  };
+
+  const handleSyncLatestApiVideos = async () => {
+    setLoadingYtApi(true);
+    setYtApiImportStatus("Running fast sync of recent content...");
+    try {
+      const res = await fetch("/api/youtube/api-import/sync-latest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userUid: currentUser?.uid })
+      });
+      const data = await safeFetchJson(res);
+      if (res.ok) {
+        alert(data.message || "Sync completed successfully!");
+      } else {
+        alert("Sync failed: " + (data.error || "Server error"));
+      }
+    } catch (err: any) {
+      alert("Sync error: " + err.message);
+    } finally {
+      setLoadingYtApi(false);
+      setYtApiImportStatus(null);
+    }
+  };
+
+  const handleSaveApiConfig = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setLoadingYtApi(true);
+    try {
+      const res = await fetch('/api/youtube/api-import/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          apiKey: ytApiConfig.apiKey.trim(),
+          channelId: ytApiConfig.channelId.trim(),
+          enabled: ytApiConfig.enabled,
+          userUid: currentUser?.uid
+        })
+      });
+      const data = await safeFetchJson(res);
+      if (res.ok) {
+        alert("YouTube API config and active status saved successfully!");
+        loadYtApiAdminData();
+      } else {
+        alert("Failed to save: " + (data.error || "Server error"));
+      }
+    } catch (err: any) {
+      alert("Error: " + err.message);
+    } finally {
+      setLoadingYtApi(false);
+    }
+  };
+
+  const handleDisconnectApiChannel = async () => {
+    if (!window.confirm("Are you sure you want to disconnect the YouTube API integration? This will disable API mode.")) {
+      return;
+    }
+    setLoadingYtApi(true);
+    try {
+      const res = await fetch('/api/youtube/api-import/disconnect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ userUid: currentUser?.uid })
       });
-      const data = await res.json();
+      const data = await safeFetchJson(res);
       if (res.ok) {
-        alert(data.message || "YouTube integration disconnected.");
-        setYtChannelUrl('');
-        setYtChannelInfo(null);
-        setYtLiveInfo(null);
-        setYtVideos([]);
-        setYtShorts([]);
-        setYtLives([]);
-        setYtConfig(prev => ({ ...prev, enabled: false }));
+        alert("YouTube API disconnected successfully.");
+        setYtApiConfig({ enabled: false, apiKey: '', channelId: '' });
+        setYtApiChannelInfo(null);
       } else {
-        throw new Error(data.error || "Disconnection failed.");
+        alert("Failed to disconnect: " + (data.error || "Server error"));
       }
     } catch (err: any) {
       alert("Error: " + err.message);
     } finally {
-      setLoadingYt(false);
+      setLoadingYtApi(false);
     }
   };
 
-  const handleRefreshYtData = async () => {
-    loadYtAdminData();
+
+
+  const handleExitConsole = () => {
+    sessionStorage.removeItem('admin_logged_in');
+    sessionStorage.removeItem('admin_2fa_verified');
+    setIsAdminLoggedIn(false);
+    onBack();
   };
 
-  // 1. Manual Video Handlers
-  const handleAddVideo = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newVideo.title || !newVideo.videoUrl) {
-      alert("Title and Video URL are required.");
-      return;
+  useEffect(() => {
+    if (activeTab === 'youtube_api_import') {
+      loadYtApiAdminData();
     }
-    setLoadingYt(true);
-    try {
-      const res = await fetch("/api/youtube/videos", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...newVideo, userUid: currentUser?.uid })
-      });
-      const data = await res.json();
-      if (res.ok) {
-        alert("Video added successfully!");
-        setNewVideo({ title: '', videoUrl: '', thumbnail: '', description: '' });
-        loadYtAdminData();
-      } else {
-        throw new Error(data.error || "Failed to add video.");
-      }
-    } catch (err: any) {
-      alert("Error: " + err.message);
-    } finally {
-      setLoadingYt(false);
-    }
-  };
+  }, [activeTab]);
 
-  const handleUpdateVideo = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!editingVideo || !editingVideo.title || !editingVideo.videoUrl) {
-      alert("Title and Video URL are required.");
-      return;
-    }
-    setLoadingYt(true);
-    try {
-      const res = await fetch(`/api/youtube/videos/${editingVideo.id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...editingVideo, userUid: currentUser?.uid })
-      });
-      const data = await res.json();
-      if (res.ok) {
-        alert("Video updated successfully!");
-        setEditingVideo(null);
-        loadYtAdminData();
-      } else {
-        throw new Error(data.error || "Failed to update video.");
-      }
-    } catch (err: any) {
-      alert("Error: " + err.message);
-    } finally {
-      setLoadingYt(false);
-    }
-  };
-
-  const handleDeleteVideo = async (id: string) => {
-    if (!window.confirm("Are you sure you want to delete this video?")) return;
-    setLoadingYt(true);
-    try {
-      const res = await fetch(`/api/youtube/videos/${id}`, {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userUid: currentUser?.uid })
-      });
-      const data = await res.json();
-      if (res.ok) {
-        alert("Video deleted successfully!");
-        loadYtAdminData();
-      } else {
-        throw new Error(data.error || "Failed to delete video.");
-      }
-    } catch (err: any) {
-      alert("Error: " + err.message);
-    } finally {
-      setLoadingYt(false);
-    }
-  };
-
-  // 2. Manual Shorts Handlers
-  const handleAddShort = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newShort.title || !newShort.shortUrl) {
-      alert("Title and Shorts URL are required.");
-      return;
-    }
-    setLoadingYt(true);
-    try {
-      const res = await fetch("/api/youtube/shorts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...newShort, userUid: currentUser?.uid })
-      });
-      const data = await res.json();
-      if (res.ok) {
-        alert("Short added successfully!");
-        setNewShort({ title: '', shortUrl: '' });
-        loadYtAdminData();
-      } else {
-        throw new Error(data.error || "Failed to add short.");
-      }
-    } catch (err: any) {
-      alert("Error: " + err.message);
-    } finally {
-      setLoadingYt(false);
-    }
-  };
-
-  const handleUpdateShort = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!editingShort || !editingShort.title || !editingShort.shortUrl) {
-      alert("Title and Shorts URL are required.");
-      return;
-    }
-    setLoadingYt(true);
-    try {
-      const res = await fetch(`/api/youtube/shorts/${editingShort.id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...editingShort, userUid: currentUser?.uid })
-      });
-      const data = await res.json();
-      if (res.ok) {
-        alert("Short updated successfully!");
-        setEditingShort(null);
-        loadYtAdminData();
-      } else {
-        throw new Error(data.error || "Failed to update short.");
-      }
-    } catch (err: any) {
-      alert("Error: " + err.message);
-    } finally {
-      setLoadingYt(false);
-    }
-  };
-
-  const handleDeleteShort = async (id: string) => {
-    if (!window.confirm("Are you sure you want to delete this short?")) return;
-    setLoadingYt(true);
-    try {
-      const res = await fetch(`/api/youtube/shorts/${id}`, {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userUid: currentUser?.uid })
-      });
-      const data = await res.json();
-      if (res.ok) {
-        alert("Short deleted successfully!");
-        loadYtAdminData();
-      } else {
-        throw new Error(data.error || "Failed to delete short.");
-      }
-    } catch (err: any) {
-      alert("Error: " + err.message);
-    } finally {
-      setLoadingYt(false);
-    }
-  };
-
-  // 3. Manual Live Stream Handlers
-  const handleAddLive = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newLive.title || !newLive.liveUrl) {
-      alert("Title and Live URL are required.");
-      return;
-    }
-    setLoadingYt(true);
-    try {
-      const res = await fetch("/api/youtube/live", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...newLive, userUid: currentUser?.uid })
-      });
-      const data = await res.json();
-      if (res.ok) {
-        alert("Live stream added successfully!");
-        setNewLive({ title: '', liveUrl: '' });
-        loadYtAdminData();
-      } else {
-        throw new Error(data.error || "Failed to add live stream.");
-      }
-    } catch (err: any) {
-      alert("Error: " + err.message);
-    } finally {
-      setLoadingYt(false);
-    }
-  };
-
-  const handleUpdateLive = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!editingLive || !editingLive.title || !editingLive.liveUrl) {
-      alert("Title and Live URL are required.");
-      return;
-    }
-    setLoadingYt(true);
-    try {
-      const res = await fetch(`/api/youtube/live/${editingLive.id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...editingLive, userUid: currentUser?.uid })
-      });
-      const data = await res.json();
-      if (res.ok) {
-        alert("Live stream updated successfully!");
-        setEditingLive(null);
-        loadYtAdminData();
-      } else {
-        throw new Error(data.error || "Failed to update live stream.");
-      }
-    } catch (err: any) {
-      alert("Error: " + err.message);
-    } finally {
-      setLoadingYt(false);
-    }
-  };
-
-  const handleDeleteLive = async (id: string) => {
-    if (!window.confirm("Are you sure you want to delete this live stream?")) return;
-    setLoadingYt(true);
-    try {
-      const res = await fetch(`/api/youtube/live/${id}`, {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userUid: currentUser?.uid })
-      });
-      const data = await res.json();
-      if (res.ok) {
-        alert("Live stream deleted successfully!");
-        loadYtAdminData();
-      } else {
-        throw new Error(data.error || "Failed to delete live stream.");
-      }
-    } catch (err: any) {
-      alert("Error: " + err.message);
-    } finally {
-      setLoadingYt(false);
-    }
-  };
 
   // Match Create/Edit Form
   const [isEditingMatch, setIsEditingMatch] = useState<string | null>(null); // tournamentId or 'new'
@@ -2365,15 +2213,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
           </button>
 
           <button
-            onClick={() => setActiveTab('youtube_management')}
+            onClick={() => setActiveTab('youtube_api_import')}
             className={`w-full flex items-center ${sidebarCollapsed ? 'justify-center px-0' : 'gap-2.5 px-3.5'} py-2.5 rounded-xl text-left text-xs uppercase font-black tracking-wider transition-all cursor-pointer ${
-              activeTab === 'youtube_management' 
+              activeTab === 'youtube_api_import' 
                 ? 'bg-gold-500/10 border border-gold-500/30 text-gold-400' 
                 : 'text-neutral-400 hover:text-white hover:bg-white/5 border border-transparent'
             }`}
           >
-            <Youtube className="w-4 h-4" />
-            {!sidebarCollapsed && <span>YouTube Management</span>}
+            <Youtube className="w-4 h-4 text-rose-500" />
+            {!sidebarCollapsed && <span>📺 YouTube API Manager</span>}
           </button>
 
           <button
@@ -4924,478 +4772,276 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
           </div>
         )}
 
-        {/* VIEW 8: YOUTUBE MANAGEMENT */}
-        {activeTab === 'youtube_management' && (
+
+              
+
+
+
+
+        {/* VIEW: YOUTUBE API IMPORT */}
+        {activeTab === 'youtube_api_import' && (
           <div className="space-y-6">
             
             {/* Header Block */}
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-[#101017] p-5 rounded-2xl border border-white/5">
               <div>
                 <h2 className="text-xl font-black text-white uppercase tracking-wider flex items-center gap-2">
-                  <Youtube className="w-6 h-6 text-red-500 fill-red-500/10" />
-                  YouTube Manual Manager
+                  <Youtube className="w-6 h-6 text-rose-500 fill-rose-500/10" />
+                  📺 YouTube API Manager
                 </h2>
-                <p className="text-xs text-neutral-400 font-sans">Completely manual controls. Add, edit, and delete videos, shorts, and live streams directly.</p>
+                <p className="text-xs text-neutral-400 font-sans">
+                  Configure YouTube Data API v3 and import channel videos, shorts, and live streams automatically.
+                </p>
               </div>
-
               <div className="flex items-center gap-2">
-                <button 
-                  onClick={handleRefreshYtData}
-                  className="px-4 py-2 bg-[#1b1b24] hover:bg-[#252531] border border-white/5 text-white font-black text-[10px] tracking-widest uppercase rounded-xl transition-all cursor-pointer shadow-lg flex items-center gap-1.5"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  Refresh View
-                </button>
+                <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider border ${
+                  ytApiConfig.enabled 
+                    ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' 
+                    : 'bg-neutral-800 text-neutral-400 border-neutral-700'
+                }`}>
+                  {ytApiConfig.enabled ? '● Connected & Active' : '○ Disconnected'}
+                </span>
               </div>
             </div>
 
-            {loadingYt && (
-              <div className="p-4 bg-[#101017] border border-gold-500/20 text-gold-400 rounded-xl text-center font-mono text-xs animate-pulse">
-                🔄 Processing manual YouTube database transaction...
-              </div>
-            )}
-
-            {/* Main Grid: Channel Connect at top, then content sections */}
-            <div className="space-y-6">
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
               
-              {/* SECTION 1: CHANNEL CONFIG & INFO */}
-              <div className="bg-[#101017] border border-white/5 rounded-2xl p-5 space-y-4">
-                <h3 className="text-xs font-black text-white uppercase tracking-widest border-b border-white/5 pb-2">
-                  1. Channel Configuration
-                </h3>
+              {/* Left Column: API Configuration Form */}
+              <div className="lg:col-span-7 space-y-6">
+                <form onSubmit={(e) => handleSaveApiConfig(e)} className="bg-[#101017] p-5 rounded-2xl border border-white/5 space-y-4">
+                  <h3 className="text-sm font-bold uppercase tracking-wider text-neutral-200 border-b border-white/5 pb-2">
+                    API Credentials
+                  </h3>
+                  
+                  <div className="space-y-1">
+                    <label className="text-[10px] uppercase font-black text-neutral-400 tracking-wider">
+                      YouTube Data API v3 API Key
+                    </label>
+                    <input
+                      type="password"
+                      placeholder="AIzaSy..."
+                      value={ytApiConfig.apiKey}
+                      onChange={(e) => setYtApiConfig({ ...ytApiConfig, apiKey: e.target.value })}
+                      className="w-full bg-[#161622] border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder-neutral-600 focus:outline-none focus:border-gold-500/50 transition-all font-mono"
+                    />
+                    <p className="text-[9px] text-neutral-500">
+                      Your secret Google Cloud Platform API Key with "YouTube Data API v3" enabled.
+                    </p>
+                  </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  {/* Left: Input controls */}
-                  <div className="space-y-4">
-                    {/* Enable Toggle */}
-                    <div className="flex items-center justify-between p-3 bg-white/5 rounded-xl border border-white/5">
-                      <div>
-                        <p className="font-extrabold text-white uppercase text-[10px] tracking-wider">Enable YouTube Tab</p>
-                        <p className="text-[9px] text-neutral-400 font-mono">Toggle user panel visibility</p>
-                      </div>
-                      <input 
-                        type="checkbox"
-                        checked={ytConfig.enabled}
-                        onChange={(e) => {
-                          setYtConfig({ ...ytConfig, enabled: e.target.checked });
-                          // Use manual fetch callback to save state
-                          fetch('/api/youtube/config', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ enabled: e.target.checked, userUid: currentUser?.uid })
-                          });
-                        }}
-                        className="w-4 h-4 text-gold-500 bg-neutral-900 border-white/10 rounded cursor-pointer"
-                      />
+                  <div className="space-y-1">
+                    <label className="text-[10px] uppercase font-black text-neutral-400 tracking-wider">
+                      YouTube Channel ID
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="UC..."
+                      value={ytApiConfig.channelId}
+                      onChange={(e) => setYtApiConfig({ ...ytApiConfig, channelId: e.target.value })}
+                      className="w-full bg-[#161622] border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder-neutral-600 focus:outline-none focus:border-gold-500/50 transition-all font-mono"
+                    />
+                    <p className="text-[9px] text-neutral-500">
+                      The unique YouTube channel identifier (e.g. UCxxxxxxxxxxxxxxxxxxxxxx).
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2 pt-2">
+                    <input
+                      type="checkbox"
+                      id="api-enabled-chk"
+                      checked={ytApiConfig.enabled}
+                      onChange={(e) => setYtApiConfig({ ...ytApiConfig, enabled: e.target.checked })}
+                      className="w-4 h-4 accent-gold-500 rounded border-white/10"
+                    />
+                    <label htmlFor="api-enabled-chk" className="text-xs text-neutral-300 font-medium cursor-pointer">
+                      Enable YouTube Channel Integration
+                    </label>
+                  </div>
+
+                  {ytApiTestStatus && (
+                    <div className={`p-4 rounded-xl border text-xs leading-relaxed ${
+                      ytApiTestStatus.success 
+                        ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' 
+                        : 'bg-rose-500/10 border-rose-500/20 text-rose-400'
+                    }`}>
+                      <p className="font-extrabold uppercase text-[10px] tracking-wider mb-1">
+                        {ytApiTestStatus.success ? '✓ Connection Succeeded' : '✗ Connection Failed'}
+                      </p>
+                      <p>{ytApiTestStatus.message}</p>
                     </div>
+                  )}
 
-                    <div className="space-y-2">
-                      <label className="text-[10px] font-bold text-neutral-400 uppercase tracking-wide block">YouTube Channel URL</label>
-                      <div className="flex gap-2">
-                        <input 
-                          type="text"
-                          value={ytChannelUrl}
-                          onChange={(e) => setYtChannelUrl(e.target.value)}
-                          placeholder="e.g. https://www.youtube.com/@YourChannel"
-                          className="flex-1 bg-neutral-900 border border-white/10 rounded-xl p-2.5 text-xs text-white placeholder-neutral-600 focus:outline-none focus:border-gold-500/30 font-sans"
-                        />
-                        <button 
-                          onClick={handleImportChannel}
-                          className="px-4 bg-gradient-to-r from-gold-500 to-amber-600 hover:brightness-110 text-neutral-950 font-black uppercase text-[10px] tracking-widest rounded-xl transition-all cursor-pointer shadow-lg"
-                        >
-                          Import Channel
-                        </button>
-                      </div>
-                      <span className="text-[8.5px] text-neutral-500 font-sans block leading-relaxed">
-                        Pasting a valid channel URL will scrape public details (Channel Name, Profile Icon, Banner URL, Subscriber Count) dynamically without any APIs.
-                      </span>
-                    </div>
+                  <div className="flex flex-wrap gap-2 pt-2 border-t border-white/5">
+                    <button
+                      type="button"
+                      onClick={handleTestApiConnection}
+                      disabled={loadingYtApi}
+                      className="px-4 py-2.5 bg-neutral-900 border border-white/10 text-neutral-200 hover:text-white hover:border-white/20 rounded-xl text-xs uppercase font-black tracking-wider transition-all cursor-pointer disabled:opacity-50"
+                    >
+                      {loadingYtApi ? 'Testing...' : 'Test Connection'}
+                    </button>
 
-                    {ytChannelInfo && (
-                      <button 
-                        onClick={handleDisconnectYt}
-                        className="px-4 py-2 bg-red-950/20 hover:bg-red-950/40 border border-red-500/25 text-red-400 font-bold uppercase text-[9px] tracking-widest rounded-xl transition-all cursor-pointer"
+                    <button
+                      type="button"
+                      onClick={handleConnectApiChannel}
+                      disabled={loadingYtApi}
+                      className="px-4 py-2.5 bg-gold-500/10 border border-gold-500/30 hover:bg-gold-500/20 text-gold-400 rounded-xl text-xs uppercase font-black tracking-wider transition-all cursor-pointer disabled:opacity-50"
+                    >
+                      Connect Channel
+                    </button>
+
+                    <button
+                      type="submit"
+                      disabled={loadingYtApi}
+                      className="px-4 py-2.5 bg-gold-500 hover:bg-gold-400 text-neutral-950 rounded-xl text-xs uppercase font-black tracking-wider transition-all cursor-pointer disabled:opacity-50 ml-auto"
+                    >
+                      Save Configuration
+                    </button>
+                  </div>
+                </form>
+
+                {ytApiChannelInfo && (
+                  <div className="bg-[#101017] p-5 rounded-2xl border border-white/5 space-y-4">
+                    <div className="flex items-center justify-between border-b border-white/5 pb-2">
+                      <h3 className="text-sm font-bold uppercase tracking-wider text-neutral-200">
+                        Connected Channel Info
+                      </h3>
+                      <button
+                        type="button"
+                        onClick={handleDisconnectApiChannel}
+                        disabled={loadingYtApi}
+                        className="px-2.5 py-1.5 bg-rose-500/10 border border-rose-500/30 text-rose-400 hover:bg-rose-500/20 rounded-lg text-[10px] uppercase font-black tracking-wider transition-all cursor-pointer"
                       >
-                        Disconnect Channel
+                        Disconnect API
                       </button>
-                    )}
-                  </div>
+                    </div>
 
-                  {/* Right: Detected Info View */}
-                  <div className="bg-[#0c0c11] border border-white/5 p-4 rounded-xl flex flex-col justify-center min-h-[140px]">
-                    {ytChannelInfo ? (
-                      <div className="space-y-4">
-                        <div className="flex items-center gap-3">
-                          <img 
-                            src={ytChannelInfo.logo} 
-                            alt={ytChannelInfo.title} 
-                            className="w-12 h-12 rounded-full border border-white/10 object-cover"
-                            referrerPolicy="no-referrer"
-                          />
-                          <div>
-                            <p className="font-black text-white uppercase text-sm tracking-wide">{ytChannelInfo.title}</p>
-                            <a href={ytChannelInfo.channelUrl} target="_blank" rel="noreferrer" className="text-[10px] text-gold-400 font-mono hover:underline">{ytChannelInfo.channelUrl}</a>
-                          </div>
-                        </div>
-
-                        {ytChannelInfo.banner && (
-                          <div className="h-10 w-full rounded overflow-hidden border border-white/5">
-                            <img src={ytChannelInfo.banner} className="w-full h-full object-cover" alt="banner" referrerPolicy="no-referrer" />
-                          </div>
-                        )}
-
-                        <div className="grid grid-cols-2 gap-2 text-[10px] font-mono">
-                          <div className="bg-white/5 p-2 rounded-lg">
-                            <span className="text-neutral-500 uppercase block text-[8px] font-semibold">Subscribers</span>
-                            <span className="text-white font-black">{ytChannelInfo.subscribers}</span>
-                          </div>
-                          <div className="bg-white/5 p-2 rounded-lg">
-                            <span className="text-neutral-500 uppercase block text-[8px] font-semibold">Mode</span>
-                            <span className="text-emerald-400 font-black uppercase">MANUAL</span>
-                          </div>
-                        </div>
+                    <div className="flex items-start gap-4">
+                      {ytApiChannelInfo.logo && (
+                        <img 
+                          src={ytApiChannelInfo.logo} 
+                          alt="Channel Logo" 
+                          referrerPolicy="no-referrer"
+                          className="w-16 h-16 rounded-full border border-white/10 object-cover"
+                        />
+                      )}
+                      <div className="space-y-1">
+                        <h4 className="text-base font-black text-white">{ytApiChannelInfo.title || ytApiChannelInfo.channelName}</h4>
+                        <p className="text-xs text-neutral-400 font-mono">{ytApiChannelInfo.customUrl || ytApiChannelInfo.channelId}</p>
+                        <p className="text-xs text-neutral-500 line-clamp-2 max-w-lg">{ytApiChannelInfo.description}</p>
                       </div>
-                    ) : (
-                      <div className="text-center py-6 text-neutral-500 font-mono text-[10.5px]">
-                        No YouTube channel is currently linked. Paste a URL and click "Import Channel" to populate.
-                      </div>
-                    )}
-                  </div>
-                </div>
+                    </div>
 
-                {ytTestStatus && (
-                  <div className={`p-3.5 rounded-xl border text-[11px] font-mono ${ytTestStatus.success ? 'bg-green-500/5 border-green-500/20 text-green-400' : 'bg-red-500/5 border-red-500/20 text-red-400'}`}>
-                    {ytTestStatus.message}
+                    <div className="grid grid-cols-3 gap-4 pt-2">
+                      <div className="bg-[#161622] p-3 rounded-xl border border-white/5 text-center">
+                        <p className="text-[10px] uppercase font-black text-neutral-500 tracking-wider mb-0.5">Subscribers</p>
+                        <p className="text-sm font-black text-white font-mono">
+                          {Number(ytApiChannelInfo.subscribers || ytApiChannelInfo.subscriberCount || 0).toLocaleString()}
+                        </p>
+                      </div>
+                      <div className="bg-[#161622] p-3 rounded-xl border border-white/5 text-center">
+                        <p className="text-[10px] uppercase font-black text-neutral-500 tracking-wider mb-0.5">Total Views</p>
+                        <p className="text-sm font-black text-white font-mono">
+                          {Number(ytApiChannelInfo.views || ytApiChannelInfo.viewCount || 0).toLocaleString()}
+                        </p>
+                      </div>
+                      <div className="bg-[#161622] p-3 rounded-xl border border-white/5 text-center">
+                        <p className="text-[10px] uppercase font-black text-neutral-500 tracking-wider mb-0.5">Total Videos</p>
+                        <p className="text-sm font-black text-white font-mono">
+                          {Number(ytApiChannelInfo.videosCount || ytApiChannelInfo.videoCount || 0).toLocaleString()}
+                        </p>
+                      </div>
+                    </div>
                   </div>
                 )}
               </div>
 
-              {/* SECTION 2: VIDEOS CRUD */}
-              <div className="bg-[#101017] border border-white/5 rounded-2xl p-5 space-y-4">
-                <h3 className="text-xs font-black text-white uppercase tracking-widest border-b border-white/5 pb-2">
-                  2. Video Archives Manager
-                </h3>
+              {/* Right Column: Execution Operations and Import Actions */}
+              <div className="lg:col-span-5 space-y-6">
+                <div className="bg-[#101017] p-5 rounded-2xl border border-white/5 space-y-4 h-full">
+                  <h3 className="text-sm font-bold uppercase tracking-wider text-neutral-200 border-b border-white/5 pb-2">
+                    Import & Sync Operations
+                  </h3>
 
-                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-                  {/* Left Column: Add / Edit Form */}
-                  <form onSubmit={editingVideo ? handleUpdateVideo : handleAddVideo} className="lg:col-span-5 space-y-4 bg-[#0a0a0f] p-4 rounded-xl border border-white/5">
-                    <h4 className="text-[10px] font-black text-white uppercase tracking-wider flex items-center gap-1.5 border-b border-white/5 pb-2">
-                      <Plus className="w-3.5 h-3.5 text-gold-400" />
-                      {editingVideo ? "Edit Video" : "Add New Video"}
-                    </h4>
+                  <p className="text-xs text-neutral-400 leading-relaxed">
+                    Trigger automatic database synchronization. The scheduler pulls from Google API quotas and populates backend storage.
+                  </p>
 
-                    <div className="space-y-1">
-                      <label className="text-[9px] font-bold text-neutral-400 uppercase tracking-wide">Video Title</label>
-                      <input 
-                        type="text"
-                        required
-                        value={editingVideo ? editingVideo.title : newVideo.title}
-                        onChange={(e) => editingVideo ? setEditingVideo({ ...editingVideo, title: e.target.value }) : setNewVideo({ ...newVideo, title: e.target.value })}
-                        placeholder="e.g. TITAN VS FNATIC - HIGHLIGHTS"
-                        className="w-full bg-neutral-900 border border-white/10 rounded-xl p-2.5 text-xs text-white focus:outline-none focus:border-gold-500/30"
-                      />
+                  {ytApiImportStatus && (
+                    <div className="p-4 bg-gold-500/5 border border-gold-500/20 rounded-xl flex items-center gap-3 text-xs text-gold-400">
+                      <RefreshCw className="w-4 h-4 animate-spin text-gold-400" />
+                      <div>
+                        <p className="font-extrabold uppercase text-[10px] tracking-wider mb-0.5">Operation In Progress</p>
+                        <p>{ytApiImportStatus}</p>
+                      </div>
                     </div>
+                  )}
 
-                    <div className="space-y-1">
-                      <label className="text-[9px] font-bold text-neutral-400 uppercase tracking-wide">YouTube Video URL</label>
-                      <input 
-                        type="text"
-                        required
-                        value={editingVideo ? editingVideo.videoUrl : newVideo.videoUrl}
-                        onChange={(e) => editingVideo ? setEditingVideo({ ...editingVideo, videoUrl: e.target.value }) : setNewVideo({ ...newVideo, videoUrl: e.target.value })}
-                        placeholder="e.g. https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-                        className="w-full bg-neutral-900 border border-white/10 rounded-xl p-2.5 text-xs text-white focus:outline-none focus:border-gold-500/30 font-sans"
-                      />
-                    </div>
+                  <div className="space-y-3 pt-2">
+                    <button
+                      type="button"
+                      onClick={handleImportApiChannelDetails}
+                      disabled={loadingYtApi || !ytApiConfig.apiKey}
+                      className="w-full p-3.5 bg-neutral-900/60 border border-white/5 hover:border-gold-500/20 text-neutral-200 hover:text-white rounded-xl flex items-center justify-between hover:bg-neutral-800/60 transition-all cursor-pointer text-xs disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <div className="space-y-0.5 text-left">
+                        <p className="font-extrabold uppercase text-[10px] tracking-wider text-white">Import Channel Details</p>
+                        <p className="text-[9px] text-neutral-400">Updates profile image, subscriber stats, and banner image</p>
+                      </div>
+                      <Download className="w-4.5 h-4.5 text-gold-400" />
+                    </button>
 
-                    <div className="space-y-1">
-                      <label className="text-[9px] font-bold text-neutral-400 uppercase tracking-wide">Custom Thumbnail URL (Optional)</label>
-                      <input 
-                        type="text"
-                        value={editingVideo ? editingVideo.thumbnail : newVideo.thumbnail}
-                        onChange={(e) => editingVideo ? setEditingVideo({ ...editingVideo, thumbnail: e.target.value }) : setNewVideo({ ...newVideo, thumbnail: e.target.value })}
-                        placeholder="Leave blank for automatic HD Youtube thumbnail"
-                        className="w-full bg-neutral-900 border border-white/10 rounded-xl p-2.5 text-xs text-white focus:outline-none focus:border-gold-500/30"
-                      />
-                    </div>
+                    <button
+                      type="button"
+                      onClick={handleImportApiVideos}
+                      disabled={loadingYtApi || !ytApiConfig.apiKey}
+                      className="w-full p-3.5 bg-neutral-900/60 border border-white/5 hover:border-gold-500/20 text-neutral-200 hover:text-white rounded-xl flex items-center justify-between hover:bg-neutral-800/60 transition-all cursor-pointer text-xs disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <div className="space-y-0.5 text-left">
+                        <p className="font-extrabold uppercase text-[10px] tracking-wider text-white">Import Videos</p>
+                        <p className="text-[9px] text-neutral-400">Scans uploads and indexes regular videos (&gt; 1 minute long)</p>
+                      </div>
+                      <Download className="w-4.5 h-4.5 text-gold-400" />
+                    </button>
 
-                    <div className="space-y-1">
-                      <label className="text-[9px] font-bold text-neutral-400 uppercase tracking-wide">Description (Optional)</label>
-                      <textarea 
-                        value={editingVideo ? editingVideo.description : newVideo.description}
-                        onChange={(e) => editingVideo ? setEditingVideo({ ...editingVideo, description: e.target.value }) : setNewVideo({ ...newVideo, description: e.target.value })}
-                        placeholder="Enter short details about the video..."
-                        className="w-full h-20 bg-neutral-900 border border-white/10 rounded-xl p-2.5 text-xs text-white focus:outline-none focus:border-gold-500/30 resize-none font-sans"
-                      />
-                    </div>
+                    <button
+                      type="button"
+                      onClick={handleImportApiShorts}
+                      disabled={loadingYtApi || !ytApiConfig.apiKey}
+                      className="w-full p-3.5 bg-neutral-900/60 border border-white/5 hover:border-gold-500/20 text-neutral-200 hover:text-white rounded-xl flex items-center justify-between hover:bg-neutral-800/60 transition-all cursor-pointer text-xs disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <div className="space-y-0.5 text-left">
+                        <p className="font-extrabold uppercase text-[10px] tracking-wider text-white">Import Shorts</p>
+                        <p className="text-[9px] text-neutral-400">Scans uploads and indexes YouTube Shorts (&lt;= 60 seconds)</p>
+                      </div>
+                      <Download className="w-4.5 h-4.5 text-gold-400" />
+                    </button>
 
-                    <div className="flex gap-2 pt-2">
-                      <button 
-                        type="submit"
-                        className="flex-1 py-2 bg-gradient-to-r from-gold-500 to-amber-600 hover:brightness-110 text-neutral-950 font-black uppercase text-[10px] tracking-widest rounded-xl transition-all shadow-md cursor-pointer"
-                      >
-                        {editingVideo ? "Save Changes" : "Save Video"}
-                      </button>
-                      {editingVideo && (
-                        <button 
-                          type="button"
-                          onClick={() => setEditingVideo(null)}
-                          className="px-3 bg-neutral-800 hover:bg-neutral-700 text-white font-extrabold uppercase text-[10px] rounded-xl cursor-pointer"
-                        >
-                          Cancel
-                        </button>
-                      )}
-                    </div>
-                  </form>
+                    <button
+                      type="button"
+                      onClick={handleImportApiLiveStreams}
+                      disabled={loadingYtApi || !ytApiConfig.apiKey}
+                      className="w-full p-3.5 bg-neutral-900/60 border border-white/5 hover:border-gold-500/20 text-neutral-200 hover:text-white rounded-xl flex items-center justify-between hover:bg-neutral-800/60 transition-all cursor-pointer text-xs disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <div className="space-y-0.5 text-left">
+                        <p className="font-extrabold uppercase text-[10px] tracking-wider text-white">Import Live Streams</p>
+                        <p className="text-[9px] text-neutral-400">Searches and records current active and upcoming broadcasts</p>
+                      </div>
+                      <Download className="w-4.5 h-4.5 text-gold-400" />
+                    </button>
 
-                  {/* Right Column: List */}
-                  <div className="lg:col-span-7 space-y-3">
-                    <h4 className="text-[10px] font-black text-neutral-400 uppercase tracking-wider">
-                      Current Video List ({ytVideos.length})
-                    </h4>
-
-                    <div className="divide-y divide-white/5 max-h-[360px] overflow-y-auto pr-1 space-y-2">
-                      {ytVideos.length === 0 ? (
-                        <p className="p-12 text-center text-neutral-500 font-mono text-[10px]">No videos added yet. Fill the form to add.</p>
-                      ) : (
-                        ytVideos.map((vid) => (
-                          <div key={vid.id} className="py-2.5 flex gap-3 items-center hover:bg-white/5 px-2.5 rounded-xl transition-all bg-[#0a0a0f] border border-white/5">
-                            <img 
-                              src={vid.thumbnail} 
-                              alt="thumb" 
-                              className="w-16 aspect-video rounded object-cover bg-neutral-800 border border-white/5 shrink-0"
-                              referrerPolicy="no-referrer"
-                            />
-                            <div className="min-w-0 flex-1">
-                              <p className="font-extrabold text-neutral-200 text-xs truncate uppercase tracking-wide leading-normal">{vid.title}</p>
-                              <p className="text-[8.5px] text-neutral-500 truncate font-mono mt-0.5">{vid.videoUrl}</p>
-                            </div>
-                            <div className="flex gap-1 shrink-0">
-                              <button 
-                                onClick={() => setEditingVideo(vid)}
-                                className="p-1.5 bg-white/5 hover:bg-white/10 rounded text-neutral-300 transition-all cursor-pointer"
-                                title="Edit"
-                              >
-                                <Edit className="w-3.5 h-3.5" />
-                              </button>
-                              <button 
-                                onClick={() => handleDeleteVideo(vid.id)}
-                                className="p-1.5 bg-red-950/20 hover:bg-red-950/40 border border-red-500/25 rounded text-red-400 transition-all cursor-pointer"
-                                title="Delete"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* SECTION 3: SHORTS CRUD */}
-              <div className="bg-[#101017] border border-white/5 rounded-2xl p-5 space-y-4">
-                <h3 className="text-xs font-black text-white uppercase tracking-widest border-b border-white/5 pb-2">
-                  3. Shorts Clips Manager
-                </h3>
-
-                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-                  {/* Left Form */}
-                  <form onSubmit={editingShort ? handleUpdateShort : handleAddShort} className="lg:col-span-5 space-y-4 bg-[#0a0a0f] p-4 rounded-xl border border-white/5">
-                    <h4 className="text-[10px] font-black text-white uppercase tracking-wider flex items-center gap-1.5 border-b border-white/5 pb-2">
-                      <Plus className="w-3.5 h-3.5 text-gold-400" />
-                      {editingShort ? "Edit Short Clip" : "Add New Short Clip"}
-                    </h4>
-
-                    <div className="space-y-1">
-                      <label className="text-[9px] font-bold text-neutral-400 uppercase tracking-wide">Short Clip Title</label>
-                      <input 
-                        type="text"
-                        required
-                        value={editingShort ? editingShort.title : newShort.title}
-                        onChange={(e) => editingShort ? setEditingShort({ ...editingShort, title: e.target.value }) : setNewShort({ ...newShort, title: e.target.value })}
-                        placeholder="e.g. CRAZY TRIPLE KILL!"
-                        className="w-full bg-neutral-900 border border-white/10 rounded-xl p-2.5 text-xs text-white focus:outline-none focus:border-gold-500/30"
-                      />
-                    </div>
-
-                    <div className="space-y-1">
-                      <label className="text-[9px] font-bold text-neutral-400 uppercase tracking-wide">YouTube Shorts URL</label>
-                      <input 
-                        type="text"
-                        required
-                        value={editingShort ? editingShort.shortUrl : newShort.shortUrl}
-                        onChange={(e) => editingShort ? setEditingShort({ ...editingShort, shortUrl: e.target.value }) : setNewShort({ ...newShort, shortUrl: e.target.value })}
-                        placeholder="e.g. https://youtube.com/shorts/abc123xyz"
-                        className="w-full bg-neutral-900 border border-white/10 rounded-xl p-2.5 text-xs text-white focus:outline-none focus:border-gold-500/30 font-sans"
-                      />
-                    </div>
-
-                    <div className="flex gap-2 pt-2">
-                      <button 
-                        type="submit"
-                        className="flex-1 py-2 bg-gradient-to-r from-gold-500 to-amber-600 hover:brightness-110 text-neutral-950 font-black uppercase text-[10px] tracking-widest rounded-xl transition-all shadow-md cursor-pointer"
-                      >
-                        {editingShort ? "Save Changes" : "Save Short"}
-                      </button>
-                      {editingShort && (
-                        <button 
-                          type="button"
-                          onClick={() => setEditingShort(null)}
-                          className="px-3 bg-neutral-800 hover:bg-neutral-700 text-white font-extrabold uppercase text-[10px] rounded-xl cursor-pointer"
-                        >
-                          Cancel
-                        </button>
-                      )}
-                    </div>
-                  </form>
-
-                  {/* Right List */}
-                  <div className="lg:col-span-7 space-y-3">
-                    <h4 className="text-[10px] font-black text-neutral-400 uppercase tracking-wider">
-                      Current Shorts List ({ytShorts.length})
-                    </h4>
-
-                    <div className="divide-y divide-white/5 max-h-[300px] overflow-y-auto pr-1 space-y-2">
-                      {ytShorts.length === 0 ? (
-                        <p className="p-12 text-center text-neutral-500 font-mono text-[10px]">No shorts added yet. Fill the form to add.</p>
-                      ) : (
-                        ytShorts.map((sh) => (
-                          <div key={sh.id} className="py-2.5 flex gap-3 items-center hover:bg-white/5 px-2.5 rounded-xl transition-all bg-[#0a0a0f] border border-white/5">
-                            <img 
-                              src={sh.thumbnail} 
-                              alt="thumb" 
-                              className="w-10 aspect-[9/16] rounded object-cover bg-neutral-800 border border-white/5 shrink-0"
-                              referrerPolicy="no-referrer"
-                            />
-                            <div className="min-w-0 flex-1">
-                              <p className="font-extrabold text-neutral-200 text-[11px] truncate uppercase tracking-wide leading-normal">{sh.title}</p>
-                              <p className="text-[8.5px] text-neutral-500 truncate font-mono mt-0.5">{sh.shortUrl}</p>
-                            </div>
-                            <div className="flex gap-1 shrink-0">
-                              <button 
-                                onClick={() => setEditingShort(sh)}
-                                className="p-1.5 bg-white/5 hover:bg-white/10 rounded text-neutral-300 transition-all cursor-pointer"
-                                title="Edit"
-                              >
-                                <Edit className="w-3.5 h-3.5" />
-                              </button>
-                              <button 
-                                onClick={() => handleDeleteShort(sh.id)}
-                                className="p-1.5 bg-red-950/20 hover:bg-red-950/40 border border-red-500/25 rounded text-red-400 transition-all cursor-pointer"
-                                title="Delete"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* SECTION 4: LIVE STREAMS CRUD */}
-              <div className="bg-[#101017] border border-white/5 rounded-2xl p-5 space-y-4">
-                <h3 className="text-xs font-black text-white uppercase tracking-widest border-b border-white/5 pb-2">
-                  4. Live Streams Manager
-                </h3>
-
-                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-                  {/* Left Form */}
-                  <form onSubmit={editingLive ? handleUpdateLive : handleAddLive} className="lg:col-span-5 space-y-4 bg-[#0a0a0f] p-4 rounded-xl border border-white/5">
-                    <h4 className="text-[10px] font-black text-white uppercase tracking-wider flex items-center gap-1.5 border-b border-white/5 pb-2">
-                      <Plus className="w-3.5 h-3.5 text-gold-400" />
-                      {editingLive ? "Edit Live Stream" : "Add Live Stream"}
-                    </h4>
-
-                    <div className="space-y-1">
-                      <label className="text-[9px] font-bold text-neutral-400 uppercase tracking-wide">Live Stream Title</label>
-                      <input 
-                        type="text"
-                        required
-                        value={editingLive ? editingLive.title : newLive.title}
-                        onChange={(e) => editingLive ? setEditingLive({ ...editingLive, title: e.target.value }) : setNewLive({ ...newLive, title: e.target.value })}
-                        placeholder="e.g. TOURNAMENT GRAND FINALS LIVE!"
-                        className="w-full bg-neutral-900 border border-white/10 rounded-xl p-2.5 text-xs text-white focus:outline-none focus:border-gold-500/30"
-                      />
-                    </div>
-
-                    <div className="space-y-1">
-                      <label className="text-[9px] font-bold text-neutral-400 uppercase tracking-wide">YouTube Live URL</label>
-                      <input 
-                        type="text"
-                        required
-                        value={editingLive ? editingLive.liveUrl : newLive.liveUrl}
-                        onChange={(e) => editingLive ? setEditingLive({ ...editingLive, liveUrl: e.target.value }) : setNewLive({ ...newLive, liveUrl: e.target.value })}
-                        placeholder="e.g. https://youtube.com/live/someStreamId"
-                        className="w-full bg-neutral-900 border border-white/10 rounded-xl p-2.5 text-xs text-white focus:outline-none focus:border-gold-500/30 font-sans"
-                      />
-                    </div>
-
-                    <div className="flex gap-2 pt-2">
-                      <button 
-                        type="submit"
-                        className="flex-1 py-2 bg-gradient-to-r from-gold-500 to-amber-600 hover:brightness-110 text-neutral-950 font-black uppercase text-[10px] tracking-widest rounded-xl transition-all shadow-md cursor-pointer"
-                      >
-                        {editingLive ? "Save Changes" : "Save Live Stream"}
-                      </button>
-                      {editingLive && (
-                        <button 
-                          type="button"
-                          onClick={() => setEditingLive(null)}
-                          className="px-3 bg-neutral-800 hover:bg-neutral-700 text-white font-extrabold uppercase text-[10px] rounded-xl cursor-pointer"
-                        >
-                          Cancel
-                        </button>
-                      )}
-                    </div>
-                  </form>
-
-                  {/* Right List */}
-                  <div className="lg:col-span-7 space-y-3">
-                    <h4 className="text-[10px] font-black text-neutral-400 uppercase tracking-wider">
-                      Current Live Streams ({ytLives.length})
-                    </h4>
-
-                    <div className="divide-y divide-white/5 max-h-[300px] overflow-y-auto pr-1 space-y-2">
-                      {ytLives.length === 0 ? (
-                        <p className="p-12 text-center text-neutral-500 font-mono text-[10px]">No live streams added yet. Fill the form to add.</p>
-                      ) : (
-                        ytLives.map((lv) => (
-                          <div key={lv.id} className="py-2.5 flex gap-3 items-center hover:bg-white/5 px-2.5 rounded-xl transition-all bg-[#0a0a0f] border border-white/5">
-                            <img 
-                              src={lv.thumbnail} 
-                              alt="thumb" 
-                              className="w-16 aspect-video rounded object-cover bg-neutral-800 border border-white/5 shrink-0"
-                              referrerPolicy="no-referrer"
-                            />
-                            <div className="min-w-0 flex-1">
-                              <p className="font-extrabold text-neutral-200 text-xs truncate uppercase tracking-wide leading-normal">{lv.title}</p>
-                              <p className="text-[8.5px] text-neutral-500 truncate font-mono mt-0.5">{lv.liveUrl}</p>
-                            </div>
-                            <div className="flex gap-1 shrink-0">
-                              <button 
-                                onClick={() => setEditingLive(lv)}
-                                className="p-1.5 bg-white/5 hover:bg-white/10 rounded text-neutral-300 transition-all cursor-pointer"
-                                title="Edit"
-                              >
-                                <Edit className="w-3.5 h-3.5" />
-                              </button>
-                              <button 
-                                onClick={() => handleDeleteLive(lv.id)}
-                                className="p-1.5 bg-red-950/20 hover:bg-red-950/40 border border-red-500/25 rounded text-red-400 transition-all cursor-pointer"
-                                title="Delete"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          </div>
-                        ))
-                      )}
-                    </div>
+                    <button
+                      type="button"
+                      onClick={handleSyncLatestApiVideos}
+                      disabled={loadingYtApi || !ytApiConfig.apiKey}
+                      className="w-full p-3.5 bg-gold-500/5 border border-gold-500/20 hover:border-gold-500 text-gold-400 hover:text-white rounded-xl flex items-center justify-between hover:bg-gold-500/10 transition-all cursor-pointer text-xs disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <div className="space-y-0.5 text-left">
+                        <p className="font-extrabold uppercase text-[10px] tracking-wider text-white">Sync Latest Videos</p>
+                        <p className="text-[9px] text-neutral-300">Run immediate scan of recent uploads for quick sync</p>
+                      </div>
+                      <RefreshCw className="w-4.5 h-4.5 text-gold-400" />
+                    </button>
                   </div>
                 </div>
               </div>

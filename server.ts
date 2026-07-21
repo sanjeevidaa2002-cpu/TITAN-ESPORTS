@@ -209,6 +209,50 @@ async function startServer() {
     return res.status(status).json(payload);
   };
 
+  // Helper to check if YouTube API is active
+  async function isYouTubeApiActive(): Promise<boolean> {
+    if (!db) return false;
+    try {
+      const configSnap = await getDoc(doc(db, "appSettings", "youtube_api_config"));
+      if (configSnap.exists()) {
+        return !!configSnap.data()?.enabled;
+      }
+    } catch (err) {
+      console.error("Error checking isYouTubeApiActive:", err);
+    }
+    return false;
+  }
+
+  // Helper to load complete YouTube API credentials/settings (restricted access)
+  async function getYouTubeApiConfig(): Promise<{ apiKey: string; channelId: string; enabled: boolean } | null> {
+    if (!db) return null;
+    try {
+      const configSnap = await getDoc(doc(db, "appSettings", "youtube_api_config"));
+      if (configSnap.exists()) {
+        const data = configSnap.data();
+        return {
+          apiKey: data.apiKey || "",
+          channelId: data.channelId || "",
+          enabled: !!data.enabled
+        };
+      }
+    } catch (err) {
+      console.error("Error getting youtube api config:", err);
+    }
+    return null;
+  }
+
+  // Parse ISO 8601 duration (e.g. PT12M30S) into seconds
+  function parseISO8601Duration(durationStr: string): number {
+    if (!durationStr) return 0;
+    const match = durationStr.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+    if (!match) return 0;
+    const hours = match[1] ? parseInt(match[1], 10) : 0;
+    const minutes = match[2] ? parseInt(match[2], 10) : 0;
+    const seconds = match[3] ? parseInt(match[3], 10) : 0;
+    return (hours * 3600) + (minutes * 60) + seconds;
+  }
+
   // Local memory fallbacks
   let manualChannelInfo: any = null;
   let manualVideos: any[] = [];
@@ -318,90 +362,70 @@ async function startServer() {
     }
   }
 
-  // 1. YouTube Channel Endpoints
+  // 1. YouTube API Endpoints
   app.get("/api/youtube/channel", async (req, res) => {
     try {
       if (db) {
-        const docSnap = await getDoc(doc(db, "appSettings", "youtube_channel"));
+        const docSnap = await getDoc(doc(db, "appSettings", "youtube_api_channel"));
         if (docSnap.exists()) {
-          manualChannelInfo = docSnap.data();
-        }
-      }
-      return helperResponseJson(res, 200, manualChannelInfo || null);
-    } catch (err: any) {
-      console.error("Error getting channel info:", err);
-      return helperResponseJson(res, 200, manualChannelInfo || null);
-    }
-  });
-
-  app.post("/api/youtube/import", async (req, res) => {
-    try {
-      const { channelUrl, userUid } = req.body;
-      if (!channelUrl) {
-        return helperResponseJson(res, 400, { success: false, error: "Channel URL is required." });
-      }
-      if (userUid) {
-        const isAdmin = await verifyAdminRole(userUid);
-        if (!isAdmin) {
-          return helperResponseJson(res, 403, { success: false, error: "Forbidden: Admin privileges required." });
-        }
-      }
-      
-      const scraped = await scrapeYouTubeChannel(channelUrl.trim());
-      manualChannelInfo = scraped;
-      
-      if (db) {
-        await setDoc(doc(db, "appSettings", "youtube_channel"), scraped, { merge: true });
-      }
-      
-      return helperResponseJson(res, 200, { success: true, message: "Channel imported successfully!", channel: scraped });
-    } catch (err: any) {
-      console.error("Error importing manual channel:", err);
-      return helperResponseJson(res, 500, { success: false, error: err.message || "Failed to import channel info." });
-    }
-  });
-
-  app.post("/api/youtube/disconnect", async (req, res) => {
-    try {
-      const { userUid } = req.body;
-      if (userUid) {
-        const isAdmin = await verifyAdminRole(userUid);
-        if (!isAdmin) {
-          return helperResponseJson(res, 403, { success: false, error: "Forbidden: Admin privileges required." });
-        }
-      }
-      manualChannelInfo = null;
-      if (db) {
-        await deleteDoc(doc(db, "appSettings", "youtube_channel"));
-      }
-      return helperResponseJson(res, 200, { success: true, message: "Channel disconnected successfully!" });
-    } catch (err: any) {
-      console.error("Error disconnecting channel:", err);
-      return helperResponseJson(res, 500, { success: false, error: err.message || "Failed to disconnect channel." });
-    }
-  });
-
-  // Endpoints for backwards compatibility config toggle
-  app.get("/api/youtube/config", async (req, res) => {
-    try {
-      if (db) {
-        const docRef = doc(db, "appSettings", "youtube");
-        const docSnap = await getDoc(docRef);
-        if (docSnap.exists()) {
-          const dbData = docSnap.data();
-          localYouTubeConfig.enabled = dbData.enabled ?? localYouTubeConfig.enabled;
+          return helperResponseJson(res, 200, docSnap.data());
         }
       }
       return helperResponseJson(res, 200, {
-        enabled: localYouTubeConfig.enabled,
+        channelId: "",
+        title: "YouTube Channel",
+        channelName: "YouTube Channel",
+        description: "Configure YouTube API in the Admin Panel.",
+        customUrl: "",
+        channelHandle: "",
+        logo: "https://cdn.pixabay.com/photo/2015/10/05/22/37/blank-profile-picture-973460_1280.png",
+        profileImage: "https://cdn.pixabay.com/photo/2015/10/05/22/37/blank-profile-picture-973460_1280.png",
+        banner: "",
+        bannerImage: "",
+        subscribers: 0,
+        subscriberCount: 0,
+        views: 0,
+        viewCount: 0,
+        videosCount: 0,
+        videoCount: 0,
+        channelUrl: "",
+        publishedAt: "",
+        country: "Global"
+      });
+    } catch (err: any) {
+      console.error("Error getting channel info:", err);
+      return helperResponseJson(res, 200, {
+        channelId: "",
+        title: "YouTube Channel",
+        channelName: "YouTube Channel",
+        description: "Configure YouTube API in the Admin Panel."
+      });
+    }
+  });
+
+  app.get("/api/youtube/config", async (req, res) => {
+    try {
+      const apiConfig = await getYouTubeApiConfig();
+      if (apiConfig) {
+        return helperResponseJson(res, 200, {
+          enabled: apiConfig.enabled,
+          hasApiKey: !!apiConfig.apiKey,
+          channelId: apiConfig.channelId,
+          useApi: true
+        });
+      }
+      return helperResponseJson(res, 200, {
+        enabled: false,
         hasApiKey: false,
-        channelId: "manual"
+        channelId: "",
+        useApi: true
       });
     } catch (err: any) {
       return helperResponseJson(res, 200, {
-        enabled: localYouTubeConfig.enabled,
+        enabled: false,
         hasApiKey: false,
-        channelId: "manual"
+        channelId: "",
+        useApi: true
       });
     }
   });
@@ -415,26 +439,20 @@ async function startServer() {
           return helperResponseJson(res, 403, { success: false, error: "Forbidden: Admin privileges required." });
         }
       }
-      localYouTubeConfig.enabled = !!enabled;
       if (db) {
-        await setDoc(doc(db, "appSettings", "youtube"), { enabled: localYouTubeConfig.enabled }, { merge: true });
+        await setDoc(doc(db, "appSettings", "youtube_api_config"), { enabled: !!enabled }, { merge: true });
       }
-      return helperResponseJson(res, 200, { success: true, message: "Settings saved successfully." });
+      return helperResponseJson(res, 200, { success: true, message: "Configuration saved successfully." });
     } catch (err: any) {
       return helperResponseJson(res, 500, { success: false, error: err.message });
     }
   });
 
-  app.post("/api/youtube/sync", async (req, res) => {
-    return helperResponseJson(res, 200, { success: true, message: "Manual sync triggers are disabled in completely manual mode." });
-  });
-
-  // 2. Videos CRUD Endpoints
   app.get("/api/youtube/videos", async (req, res) => {
     try {
-      let list: any[] = [];
       if (db) {
-        const snap = await getDocs(collection(db, "manual_youtube_videos"));
+        let list: any[] = [];
+        const snap = await getDocs(collection(db, "youtube_api_videos"));
         snap.forEach((doc) => {
           const data = doc.data();
           list.push({
@@ -445,165 +463,29 @@ async function startServer() {
             videoId: data.videoId,
             thumbnail: data.thumbnail,
             description: data.description || "",
-            views: data.views ?? 1250,
-            likes: data.likes ?? 78,
-            comments: data.comments ?? 14,
-            duration: data.duration ?? "PT14M20S",
-            durationSeconds: data.durationSeconds ?? 860,
-            publishedAt: data.createdAt || data.publishedAt || new Date().toISOString()
+            views: data.views ?? 0,
+            likes: data.likes ?? 0,
+            comments: data.comments ?? 0,
+            duration: data.duration ?? "PT0S",
+            durationSeconds: data.durationSeconds ?? 0,
+            publishedAt: data.publishedAt || data.createdAt || new Date().toISOString()
           });
         });
         list.sort((a, b) => new Date(b.publishedAt || 0).getTime() - new Date(a.publishedAt || 0).getTime());
-        manualVideos = list;
-      } else {
-        list = manualVideos;
+        return helperResponseJson(res, 200, list);
       }
-      return helperResponseJson(res, 200, list);
+      return helperResponseJson(res, 200, []);
     } catch (err: any) {
-      console.error("Error getting manual videos:", err);
-      return helperResponseJson(res, 200, manualVideos);
+      console.error("Error getting youtube videos:", err);
+      return helperResponseJson(res, 200, []);
     }
   });
 
-  app.post("/api/youtube/videos", async (req, res) => {
-    try {
-      const { title, videoUrl, thumbnail, description, userUid } = req.body;
-      if (!title || !videoUrl) {
-        return helperResponseJson(res, 400, { success: false, error: "Title and Video URL are required." });
-      }
-      if (userUid) {
-        const isAdmin = await verifyAdminRole(userUid);
-        if (!isAdmin) {
-          return helperResponseJson(res, 403, { success: false, error: "Forbidden: Admin privileges required." });
-        }
-      }
-
-      const videoId = getYouTubeId(videoUrl);
-      if (!videoId) {
-        return helperResponseJson(res, 400, { success: false, error: "Invalid YouTube Video URL format." });
-      }
-
-      const finalThumbnail = thumbnail?.trim() || `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`;
-
-      const videoDoc = {
-        title: title.trim(),
-        videoUrl: videoUrl.trim(),
-        videoId,
-        thumbnail: finalThumbnail,
-        description: (description || "").trim(),
-        createdAt: new Date().toISOString()
-      };
-
-      let savedId = "vid_" + Date.now();
-      if (db) {
-        const docRef = await addDoc(collection(db, "manual_youtube_videos"), videoDoc);
-        savedId = docRef.id;
-      } else {
-        manualVideos.unshift({ id: savedId, ...videoDoc });
-      }
-
-      return helperResponseJson(res, 200, { success: true, message: "Video added successfully!", id: savedId });
-    } catch (err: any) {
-      console.error("Error adding video:", err);
-      return helperResponseJson(res, 500, { success: false, error: err.message || "Failed to add video." });
-    }
-  });
-
-  app.put("/api/youtube/videos/:id", async (req, res) => {
-    try {
-      const { id } = req.params;
-      const { title, videoUrl, thumbnail, description, userUid } = req.body;
-      if (!title || !videoUrl) {
-        return helperResponseJson(res, 400, { success: false, error: "Title and Video URL are required." });
-      }
-      if (userUid) {
-        const isAdmin = await verifyAdminRole(userUid);
-        if (!isAdmin) {
-          return helperResponseJson(res, 403, { success: false, error: "Forbidden: Admin privileges required." });
-        }
-      }
-
-      const videoId = getYouTubeId(videoUrl);
-      if (!videoId) {
-        return helperResponseJson(res, 400, { success: false, error: "Invalid YouTube Video URL format." });
-      }
-
-      const finalThumbnail = thumbnail?.trim() || `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`;
-
-      const updatedDoc = {
-        title: title.trim(),
-        videoUrl: videoUrl.trim(),
-        videoId,
-        thumbnail: finalThumbnail,
-        description: (description || "").trim()
-      };
-
-      if (db) {
-        let targetDocId = id;
-        const directDoc = doc(db, "manual_youtube_videos", id);
-        const directSnap = await getDoc(directDoc);
-        if (!directSnap.exists()) {
-          const q = query(collection(db, "manual_youtube_videos"), where("videoId", "==", id));
-          const querySnap = await getDocs(q);
-          if (!querySnap.empty) {
-            targetDocId = querySnap.docs[0].id;
-          }
-        }
-        await setDoc(doc(db, "manual_youtube_videos", targetDocId), updatedDoc, { merge: true });
-      } else {
-        const idx = manualVideos.findIndex(v => v.id === id || v.videoId === id);
-        if (idx !== -1) {
-          manualVideos[idx] = { ...manualVideos[idx], ...updatedDoc };
-        }
-      }
-
-      return helperResponseJson(res, 200, { success: true, message: "Video updated successfully!" });
-    } catch (err: any) {
-      console.error("Error updating video:", err);
-      return helperResponseJson(res, 500, { success: false, error: err.message || "Failed to update video." });
-    }
-  });
-
-  app.delete("/api/youtube/videos/:id", async (req, res) => {
-    try {
-      const { id } = req.params;
-      const { userUid } = req.body;
-      if (userUid) {
-        const isAdmin = await verifyAdminRole(userUid);
-        if (!isAdmin) {
-          return helperResponseJson(res, 403, { success: false, error: "Forbidden: Admin privileges required." });
-        }
-      }
-
-      if (db) {
-        let targetDocId = id;
-        const directDoc = doc(db, "manual_youtube_videos", id);
-        const directSnap = await getDoc(directDoc);
-        if (!directSnap.exists()) {
-          const q = query(collection(db, "manual_youtube_videos"), where("videoId", "==", id));
-          const querySnap = await getDocs(q);
-          if (!querySnap.empty) {
-            targetDocId = querySnap.docs[0].id;
-          }
-        }
-        await deleteDoc(doc(db, "manual_youtube_videos", targetDocId));
-      } else {
-        manualVideos = manualVideos.filter(v => v.id !== id && v.videoId !== id);
-      }
-
-      return helperResponseJson(res, 200, { success: true, message: "Video deleted successfully!" });
-    } catch (err: any) {
-      console.error("Error deleting video:", err);
-      return helperResponseJson(res, 500, { success: false, error: err.message || "Failed to delete video." });
-    }
-  });
-
-  // 3. Shorts CRUD Endpoints
   app.get("/api/youtube/shorts", async (req, res) => {
     try {
-      let list: any[] = [];
       if (db) {
-        const snap = await getDocs(collection(db, "manual_youtube_shorts"));
+        let list: any[] = [];
+        const snap = await getDocs(collection(db, "youtube_api_shorts"));
         snap.forEach((doc) => {
           const data = doc.data();
           list.push({
@@ -613,167 +495,33 @@ async function startServer() {
             shortUrl: data.shortUrl,
             videoId: data.videoId,
             thumbnail: data.thumbnail,
-            views: data.views ?? 3840,
-            likes: data.likes ?? 210,
-            comments: data.comments ?? 11,
-            publishedAt: data.createdAt || data.publishedAt || new Date().toISOString()
+            views: data.views ?? 0,
+            likes: data.likes ?? 0,
+            comments: data.comments ?? 0,
+            publishedAt: data.publishedAt || data.createdAt || new Date().toISOString()
           });
         });
         list.sort((a, b) => new Date(b.publishedAt || 0).getTime() - new Date(a.publishedAt || 0).getTime());
-        manualShorts = list;
-      } else {
-        list = manualShorts;
+        return helperResponseJson(res, 200, list);
       }
-      return helperResponseJson(res, 200, list);
+      return helperResponseJson(res, 200, []);
     } catch (err: any) {
-      console.error("Error getting manual shorts:", err);
-      return helperResponseJson(res, 200, manualShorts);
+      console.error("Error getting youtube shorts:", err);
+      return helperResponseJson(res, 200, []);
     }
   });
 
-  app.post("/api/youtube/shorts", async (req, res) => {
-    try {
-      const { title, shortUrl, userUid } = req.body;
-      if (!title || !shortUrl) {
-        return helperResponseJson(res, 400, { success: false, error: "Title and Shorts URL are required." });
-      }
-      if (userUid) {
-        const isAdmin = await verifyAdminRole(userUid);
-        if (!isAdmin) {
-          return helperResponseJson(res, 403, { success: false, error: "Forbidden: Admin privileges required." });
-        }
-      }
-
-      const videoId = getYouTubeId(shortUrl);
-      if (!videoId) {
-        return helperResponseJson(res, 400, { success: false, error: "Invalid YouTube Shorts URL format." });
-      }
-
-      const shortDoc = {
-        title: title.trim(),
-        shortUrl: shortUrl.trim(),
-        videoId,
-        thumbnail: `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`,
-        createdAt: new Date().toISOString()
-      };
-
-      let savedId = "short_" + Date.now();
-      if (db) {
-        const docRef = await addDoc(collection(db, "manual_youtube_shorts"), shortDoc);
-        savedId = docRef.id;
-      } else {
-        manualShorts.unshift({ id: savedId, ...shortDoc });
-      }
-
-      return helperResponseJson(res, 200, { success: true, message: "Short added successfully!", id: savedId });
-    } catch (err: any) {
-      console.error("Error adding short:", err);
-      return helperResponseJson(res, 500, { success: false, error: err.message || "Failed to add short." });
-    }
-  });
-
-  app.put("/api/youtube/shorts/:id", async (req, res) => {
-    try {
-      const { id } = req.params;
-      const { title, shortUrl, userUid } = req.body;
-      if (!title || !shortUrl) {
-        return helperResponseJson(res, 400, { success: false, error: "Title and Shorts URL are required." });
-      }
-      if (userUid) {
-        const isAdmin = await verifyAdminRole(userUid);
-        if (!isAdmin) {
-          return helperResponseJson(res, 403, { success: false, error: "Forbidden: Admin privileges required." });
-        }
-      }
-
-      const videoId = getYouTubeId(shortUrl);
-      if (!videoId) {
-        return helperResponseJson(res, 400, { success: false, error: "Invalid YouTube Shorts URL format." });
-      }
-
-      const updatedDoc = {
-        title: title.trim(),
-        shortUrl: shortUrl.trim(),
-        videoId,
-        thumbnail: `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`
-      };
-
-      if (db) {
-        let targetDocId = id;
-        const directDoc = doc(db, "manual_youtube_shorts", id);
-        const directSnap = await getDoc(directDoc);
-        if (!directSnap.exists()) {
-          const q = query(collection(db, "manual_youtube_shorts"), where("videoId", "==", id));
-          const querySnap = await getDocs(q);
-          if (!querySnap.empty) {
-            targetDocId = querySnap.docs[0].id;
-          }
-        }
-        await setDoc(doc(db, "manual_youtube_shorts", targetDocId), updatedDoc, { merge: true });
-      } else {
-        const idx = manualShorts.findIndex(s => s.id === id || s.videoId === id);
-        if (idx !== -1) {
-          manualShorts[idx] = { ...manualShorts[idx], ...updatedDoc };
-        }
-      }
-
-      return helperResponseJson(res, 200, { success: true, message: "Short updated successfully!" });
-    } catch (err: any) {
-      console.error("Error updating short:", err);
-      return helperResponseJson(res, 500, { success: false, error: err.message || "Failed to update short." });
-    }
-  });
-
-  app.delete("/api/youtube/shorts/:id", async (req, res) => {
-    try {
-      const { id } = req.params;
-      const { userUid } = req.body;
-      if (userUid) {
-        const isAdmin = await verifyAdminRole(userUid);
-        if (!isAdmin) {
-          return helperResponseJson(res, 403, { success: false, error: "Forbidden: Admin privileges required." });
-        }
-      }
-
-      if (db) {
-        let targetDocId = id;
-        const directDoc = doc(db, "manual_youtube_shorts", id);
-        const directSnap = await getDoc(directDoc);
-        if (!directSnap.exists()) {
-          const q = query(collection(db, "manual_youtube_shorts"), where("videoId", "==", id));
-          const querySnap = await getDocs(q);
-          if (!querySnap.empty) {
-            targetDocId = querySnap.docs[0].id;
-          }
-        }
-        await deleteDoc(doc(db, "manual_youtube_shorts", targetDocId));
-      } else {
-        manualShorts = manualShorts.filter(s => s.id !== id && s.videoId !== id);
-      }
-
-      return helperResponseJson(res, 200, { success: true, message: "Short deleted successfully!" });
-    } catch (err: any) {
-      console.error("Error deleting short:", err);
-      return helperResponseJson(res, 500, { success: false, error: err.message || "Failed to delete short." });
-    }
-  });
-
-  // 4. Live Streams CRUD Endpoints
   app.get("/api/youtube/live", async (req, res) => {
     try {
       let list: any[] = [];
       if (db) {
-        const snap = await getDocs(collection(db, "manual_youtube_live"));
+        const snap = await getDocs(collection(db, "youtube_api_live"));
         snap.forEach((doc) => {
           list.push({ id: doc.id, ...doc.data() });
         });
-        list.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
-        manualLives = list;
-      } else {
-        list = manualLives;
+        list.sort((a, b) => new Date(b.publishedAt || b.createdAt || 0).getTime() - new Date(a.publishedAt || a.createdAt || 0).getTime());
       }
 
-      // If requested raw list (e.g. from the Admin Dashboard forms)
       if (req.query.raw === "true") {
         return helperResponseJson(res, 200, list.map(item => ({
           ...item,
@@ -781,7 +529,6 @@ async function startServer() {
         })));
       }
 
-      // Default status-based response for YouTubeTab client view
       if (list.length === 0) {
         return helperResponseJson(res, 200, {
           isLive: false,
@@ -791,32 +538,44 @@ async function startServer() {
         });
       }
 
-      const activeItem = list[0];
-      const activeLive = {
+      const activeItem = list.find(item => item.liveStatus === "live" || item.isLive === true);
+      const upcomingItems = list.filter(item => item.liveStatus === "upcoming");
+      const pastItems = list.filter(item => item.liveStatus === "completed" || (!item.isLive && item.liveStatus !== "upcoming"));
+
+      const activeLive = activeItem ? {
         id: activeItem.videoId || activeItem.id,
         title: activeItem.title,
-        description: "Live tournament stream coverage.",
+        description: activeItem.description || "Live tournament stream coverage.",
         thumbnail: activeItem.thumbnail || `https://img.youtube.com/vi/${activeItem.videoId}/mqdefault.jpg`,
-        publishedAt: activeItem.createdAt || new Date().toISOString(),
-        viewerCount: activeItem.viewerCount || 135
-      };
+        publishedAt: activeItem.publishedAt || activeItem.createdAt || new Date().toISOString(),
+        viewerCount: activeItem.viewerCount || 0
+      } : null;
 
-      const upcomingStreams = list.slice(1).map(item => ({
+      const upcomingStreams = upcomingItems.map(item => ({
         id: item.videoId || item.id,
         title: item.title,
-        description: "Upcoming scheduled live coverage.",
+        description: item.description || "Upcoming scheduled live coverage.",
         thumbnail: item.thumbnail || `https://img.youtube.com/vi/${item.videoId}/mqdefault.jpg`,
-        publishedAt: item.createdAt || new Date().toISOString()
+        publishedAt: item.publishedAt || item.createdAt || new Date().toISOString()
+      }));
+
+      const pastLiveStreams = pastItems.map(item => ({
+        id: item.videoId || item.id,
+        title: item.title,
+        description: item.description || "Past live tournament broadcast.",
+        thumbnail: item.thumbnail || `https://img.youtube.com/vi/${item.videoId}/mqdefault.jpg`,
+        publishedAt: item.publishedAt || item.createdAt || new Date().toISOString(),
+        views: item.views || item.viewerCount || 0
       }));
 
       return helperResponseJson(res, 200, {
-        isLive: true,
+        isLive: !!activeLive,
         activeLive,
         upcomingStreams,
-        pastLiveStreams: []
+        pastLiveStreams
       });
     } catch (err: any) {
-      console.error("Error getting manual live streams:", err);
+      console.error("Error getting live streams:", err);
       return helperResponseJson(res, 200, {
         isLive: false,
         activeLive: null,
@@ -826,130 +585,454 @@ async function startServer() {
     }
   });
 
-  app.post("/api/youtube/live", async (req, res) => {
+  // =========================================================================
+  // YOUTUBE API IMPORT SYSTEM (INDEPENDENT FROM MANUAL SYSTEM)
+  // =========================================================================
+
+  // Helper to handle and parse YouTube API errors
+  function parseYouTubeApiError(err: any): string {
+    if (err.response && err.response.data && err.response.data.error) {
+      const errorObj = err.response.data.error;
+      const errors = errorObj.errors || [];
+      const reason = errors[0]?.reason || "";
+      if (reason === "keyInvalid") return "Invalid API Key";
+      if (reason === "quotaExceeded") return "API Quota Exceeded";
+      if (reason === "accessNotConfigured" || reason === "serviceDisabled") return "API Disabled";
+      return errorObj.message || "YouTube API error occurred";
+    }
+    const message = err.message || "";
+    if (message.includes("API key not valid") || message.includes("400")) return "Invalid API Key";
+    if (message.includes("quotaExceeded")) return "API Quota Exceeded";
+    return message || "Unknown error";
+  }
+
+  // Get API Config (Admin Only)
+  app.get("/api/youtube/api-import/config", async (req, res) => {
     try {
-      const { title, liveUrl, userUid } = req.body;
-      if (!title || !liveUrl) {
-        return helperResponseJson(res, 400, { success: false, error: "Title and Live URL are required." });
+      const { userUid } = req.query;
+      if (!userUid) {
+        return helperResponseJson(res, 400, { success: false, error: "Missing admin user session." });
       }
-      if (userUid) {
-        const isAdmin = await verifyAdminRole(userUid);
-        if (!isAdmin) {
-          return helperResponseJson(res, 403, { success: false, error: "Forbidden: Admin privileges required." });
-        }
+      const isAdmin = await verifyAdminRole(String(userUid));
+      if (!isAdmin) {
+        return helperResponseJson(res, 403, { success: false, error: "Forbidden: Admin privileges required." });
       }
 
-      const videoId = getYouTubeId(liveUrl);
-      if (!videoId) {
-        return helperResponseJson(res, 400, { success: false, error: "Invalid YouTube Live URL format." });
-      }
-
-      const liveDoc = {
-        title: title.trim(),
-        liveUrl: liveUrl.trim(),
-        videoId,
-        thumbnail: `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`,
-        createdAt: new Date().toISOString()
-      };
-
-      let savedId = "live_" + Date.now();
-      if (db) {
-        const docRef = await addDoc(collection(db, "manual_youtube_live"), liveDoc);
-        savedId = docRef.id;
-      } else {
-        manualLives.unshift({ id: savedId, ...liveDoc });
-      }
-
-      return helperResponseJson(res, 200, { success: true, message: "Live stream added successfully!", id: savedId });
+      const config = await getYouTubeApiConfig();
+      return helperResponseJson(res, 200, {
+        success: true,
+        config: config || { apiKey: "", channelId: "", enabled: false }
+      });
     } catch (err: any) {
-      console.error("Error adding live stream:", err);
-      return helperResponseJson(res, 500, { success: false, error: err.message || "Failed to add live stream." });
+      return helperResponseJson(res, 500, { success: false, error: err.message });
     }
   });
 
-  app.put("/api/youtube/live/:id", async (req, res) => {
+  // Save API Config (Admin Only)
+  app.post("/api/youtube/api-import/config", async (req, res) => {
     try {
-      const { id } = req.params;
-      const { title, liveUrl, userUid } = req.body;
-      if (!title || !liveUrl) {
-        return helperResponseJson(res, 400, { success: false, error: "Title and Live URL are required." });
+      const { apiKey, channelId, enabled, userUid } = req.body;
+      if (!userUid) {
+        return helperResponseJson(res, 400, { success: false, error: "Missing admin user session." });
       }
-      if (userUid) {
-        const isAdmin = await verifyAdminRole(userUid);
-        if (!isAdmin) {
-          return helperResponseJson(res, 403, { success: false, error: "Forbidden: Admin privileges required." });
-        }
+      const isAdmin = await verifyAdminRole(userUid);
+      if (!isAdmin) {
+        return helperResponseJson(res, 403, { success: false, error: "Forbidden: Admin privileges required." });
       }
-
-      const videoId = getYouTubeId(liveUrl);
-      if (!videoId) {
-        return helperResponseJson(res, 400, { success: false, error: "Invalid YouTube Live URL format." });
-      }
-
-      const updatedDoc = {
-        title: title.trim(),
-        liveUrl: liveUrl.trim(),
-        videoId,
-        thumbnail: `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`
-      };
 
       if (db) {
-        let targetDocId = id;
-        const directDoc = doc(db, "manual_youtube_live", id);
-        const directSnap = await getDoc(directDoc);
-        if (!directSnap.exists()) {
-          const q = query(collection(db, "manual_youtube_live"), where("videoId", "==", id));
-          const querySnap = await getDocs(q);
-          if (!querySnap.empty) {
-            targetDocId = querySnap.docs[0].id;
+        await setDoc(doc(db, "appSettings", "youtube_api_config"), {
+          apiKey: (apiKey || "").trim(),
+          channelId: (channelId || "").trim(),
+          enabled: !!enabled,
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+      }
+
+      return helperResponseJson(res, 200, { success: true, message: "Configuration saved successfully." });
+    } catch (err: any) {
+      return helperResponseJson(res, 500, { success: false, error: err.message });
+    }
+  });
+
+  // =========================================================================
+  // YOUTUBE DATA API V3 MANAGEMENT SYSTEM (UNIFIED & SECURE)
+  // =========================================================================
+
+  // Unified full synchronization helper
+  async function syncAllYouTubeData(apiKey: string, channelId: string): Promise<{ success: boolean; message: string; details: any }> {
+    if (!db) {
+      throw new Error("Firestore database is not initialized.");
+    }
+
+    const trimmedKey = apiKey.trim();
+    const trimmedChannelId = channelId.trim();
+
+    // 1. Fetch & Save Channel Metadata
+    let uploadsPlaylistId = "";
+    try {
+      const chanRes = await fetch(`https://www.googleapis.com/youtube/v3/channels?part=snippet,contentDetails,statistics,brandingSettings&id=${trimmedChannelId}&key=${trimmedKey}`);
+      if (!chanRes.ok) {
+        const errorData = await chanRes.json().catch(() => ({}));
+        const reason = errorData.error?.message || "Channel lookup failed";
+        throw new Error(`Channel Lookup Failed: ${reason}`);
+      }
+      const data = await chanRes.json();
+      if (!data.items || data.items.length === 0) {
+        throw new Error("Invalid Channel ID: Channel not found.");
+      }
+      const channelItem = data.items[0];
+      const channelSnippet = channelItem.snippet;
+      const statistics = channelItem.statistics;
+      const brandingSettings = channelItem.brandingSettings;
+      uploadsPlaylistId = channelItem.contentDetails?.relatedPlaylists?.uploads || "";
+
+      const logo = channelSnippet.thumbnails?.high?.url || channelSnippet.thumbnails?.medium?.url || channelSnippet.thumbnails?.default?.url || "";
+      const banner = brandingSettings?.image?.bannerExternalUrl || "";
+
+      const channelDoc = {
+        id: trimmedChannelId,
+        channelId: trimmedChannelId,
+        title: channelSnippet.title || "",
+        channelName: channelSnippet.title || "",
+        description: channelSnippet.description || "",
+        customUrl: channelSnippet.customUrl || "",
+        channelHandle: channelSnippet.customUrl || "",
+        logo,
+        profileImage: logo,
+        banner,
+        bannerImage: banner,
+        subscribers: statistics?.subscriberCount ? Number(statistics.subscriberCount) : 0,
+        subscriberCount: statistics?.subscriberCount ? Number(statistics.subscriberCount) : 0,
+        views: statistics?.viewCount ? Number(statistics.viewCount) : 0,
+        viewCount: statistics?.viewCount ? Number(statistics.viewCount) : 0,
+        videosCount: statistics?.videoCount ? Number(statistics.videoCount) : 0,
+        videoCount: statistics?.videoCount ? Number(statistics.videoCount) : 0,
+        channelUrl: `https://youtube.com/channel/${trimmedChannelId}`,
+        publishedAt: channelSnippet.publishedAt || "",
+        country: channelSnippet.country || "Global",
+        updatedAt: new Date().toISOString()
+      };
+
+      await setDoc(doc(db, "appSettings", "youtube_api_channel"), channelDoc, { merge: true });
+      await setDoc(doc(db, "appSettings", "youtube_api_config"), { uploadsPlaylistId }, { merge: true });
+    } catch (err: any) {
+      console.error("Error in syncAllYouTubeData (metadata):", err);
+      throw err;
+    }
+
+    // 2. Fetch uploads (latest 50 items) & categorize into Videos & Shorts
+    let videosCount = 0;
+    let shortsCount = 0;
+    if (uploadsPlaylistId) {
+      try {
+        const playRes = await fetch(`https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=${uploadsPlaylistId}&maxResults=50&key=${trimmedKey}`);
+        if (playRes.ok) {
+          const playData = await playRes.json();
+          const items = playData.items || [];
+          const videoIds = items.map((it: any) => it.contentDetails?.videoId).filter(Boolean);
+
+          if (videoIds.length > 0) {
+            const detailRes = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics&id=${videoIds.join(",")}&key=${trimmedKey}`);
+            if (detailRes.ok) {
+              const detailData = await detailRes.json();
+              const videoItems = detailData.items || [];
+
+              for (const item of videoItems) {
+                const durationStr = item.contentDetails?.duration || "";
+                const durationSeconds = parseISO8601Duration(durationStr);
+                const videoId = item.id;
+
+                if (durationSeconds > 60) {
+                  const videoData = {
+                    id: videoId,
+                    videoId,
+                    title: item.snippet?.title || "",
+                    thumbnail: item.snippet?.thumbnails?.high?.url || item.snippet?.thumbnails?.medium?.url || `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`,
+                    description: item.snippet?.description || "",
+                    videoUrl: `https://youtube.com/watch?v=${videoId}`,
+                    embedUrl: `https://www.youtube.com/embed/${videoId}`,
+                    views: item.statistics?.viewCount ? Number(item.statistics.viewCount) : 0,
+                    likes: item.statistics?.likeCount ? Number(item.statistics.likeCount) : 0,
+                    comments: item.statistics?.commentCount ? Number(item.statistics.commentCount) : 0,
+                    duration: durationStr,
+                    durationSeconds,
+                    liveStatus: "none",
+                    publishedAt: item.snippet?.publishedAt || new Date().toISOString(),
+                    createdAt: new Date().toISOString()
+                  };
+                  await setDoc(doc(db, "youtube_api_videos", videoId), videoData, { merge: true });
+                  videosCount++;
+                } else if (durationSeconds > 0) {
+                  const shortData = {
+                    id: videoId,
+                    videoId,
+                    title: item.snippet?.title || "",
+                    thumbnail: item.snippet?.thumbnails?.high?.url || item.snippet?.thumbnails?.medium?.url || `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`,
+                    description: item.snippet?.description || "",
+                    shortUrl: `https://youtube.com/shorts/${videoId}`,
+                    embedUrl: `https://www.youtube.com/embed/${videoId}`,
+                    views: item.statistics?.viewCount ? Number(item.statistics.viewCount) : 0,
+                    likes: item.statistics?.likeCount ? Number(item.statistics.likeCount) : 0,
+                    comments: item.statistics?.commentCount ? Number(item.statistics.commentCount) : 0,
+                    duration: durationStr,
+                    durationSeconds,
+                    liveStatus: "none",
+                    publishedAt: item.snippet?.publishedAt || new Date().toISOString(),
+                    createdAt: new Date().toISOString()
+                  };
+                  await setDoc(doc(db, "youtube_api_shorts", videoId), shortData, { merge: true });
+                  shortsCount++;
+                }
+              }
+            }
           }
         }
-        await setDoc(doc(db, "manual_youtube_live", targetDocId), updatedDoc, { merge: true });
-      } else {
-        const idx = manualLives.findIndex(l => l.id === id || l.videoId === id);
-        if (idx !== -1) {
-          manualLives[idx] = { ...manualLives[idx], ...updatedDoc };
+      } catch (err) {
+        console.error("Error in syncAllYouTubeData (uploads):", err);
+      }
+    }
+
+    // 3. Search and save Live Streams / upcoming streams / Premieres
+    let liveCount = 0;
+    try {
+      const searchRes = await fetch(`https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${trimmedChannelId}&type=video&maxResults=50&order=date&key=${trimmedKey}`);
+      if (searchRes.ok) {
+        const searchData = await searchRes.json();
+        const items = searchData.items || [];
+        const videoIds = items.map((it: any) => it.id?.videoId).filter(Boolean);
+
+        if (videoIds.length > 0) {
+          const detailRes = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics,liveStreamingDetails&id=${videoIds.join(",")}&key=${trimmedKey}`);
+          if (detailRes.ok) {
+            const detailData = await detailRes.json();
+            const videoItems = detailData.items || [];
+
+            for (const item of videoItems) {
+              if (item.liveStreamingDetails || item.snippet?.liveBroadcastContent === "live" || item.snippet?.liveBroadcastContent === "upcoming") {
+                const videoId = item.id;
+                const liveStatus = item.snippet?.liveBroadcastContent || "none";
+                const isLive = liveStatus === "live";
+
+                const liveData = {
+                  id: videoId,
+                  videoId,
+                  title: item.snippet?.title || "",
+                  thumbnail: item.snippet?.thumbnails?.high?.url || item.snippet?.thumbnails?.medium?.url || `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`,
+                  description: item.snippet?.description || "",
+                  liveUrl: `https://youtube.com/watch?v=${videoId}`,
+                  embedUrl: `https://www.youtube.com/embed/${videoId}`,
+                  viewerCount: item.liveStreamingDetails?.concurrentViewers ? Number(item.liveStreamingDetails.concurrentViewers) : (isLive ? 120 : 0),
+                  isLive,
+                  liveStatus,
+                  publishedAt: item.snippet?.publishedAt || new Date().toISOString(),
+                  createdAt: new Date().toISOString()
+                };
+                await setDoc(doc(db, "youtube_api_live", videoId), liveData, { merge: true });
+                liveCount++;
+              }
+            }
+          }
         }
       }
+    } catch (err) {
+      console.error("Error in syncAllYouTubeData (live):", err);
+    }
 
-      return helperResponseJson(res, 200, { success: true, message: "Live stream updated successfully!" });
+    return {
+      success: true,
+      message: `Fully synchronized channel! Imported ${videosCount} Videos, ${shortsCount} Shorts, and ${liveCount} Live broadcasts.`,
+      details: { videosCount, shortsCount, liveCount }
+    };
+  }
+
+  // Get Config (Admin Only)
+  app.get("/api/youtube/api-import/config", async (req, res) => {
+    try {
+      const { userUid } = req.query;
+      if (!userUid) {
+        return helperResponseJson(res, 400, { success: false, error: "Missing admin user session." });
+      }
+      const isAdmin = await verifyAdminRole(userUid as string);
+      if (!isAdmin) {
+        return helperResponseJson(res, 403, { success: false, error: "Forbidden: Admin privileges required." });
+      }
+
+      const config = await getYouTubeApiConfig();
+      if (config) {
+        return helperResponseJson(res, 200, {
+          success: true,
+          apiKey: config.apiKey,
+          channelId: config.channelId,
+          enabled: config.enabled
+        });
+      }
+      return helperResponseJson(res, 200, {
+        success: true,
+        apiKey: "",
+        channelId: "",
+        enabled: false
+      });
     } catch (err: any) {
-      console.error("Error updating live stream:", err);
-      return helperResponseJson(res, 500, { success: false, error: err.message || "Failed to update live stream." });
+      return helperResponseJson(res, 500, { success: false, error: err.message });
     }
   });
 
-  app.delete("/api/youtube/live/:id", async (req, res) => {
+  // Save Config without syncing (Admin Only)
+  app.post("/api/youtube/api-import/config", async (req, res) => {
     try {
-      const { id } = req.params;
+      const { apiKey, channelId, enabled, userUid } = req.body;
+      if (!userUid) {
+        return helperResponseJson(res, 400, { success: false, error: "Missing admin user session." });
+      }
+      const isAdmin = await verifyAdminRole(userUid);
+      if (!isAdmin) {
+        return helperResponseJson(res, 403, { success: false, error: "Forbidden: Admin privileges required." });
+      }
+
+      if (db) {
+        await setDoc(doc(db, "appSettings", "youtube_api_config"), {
+          apiKey: (apiKey || "").trim(),
+          channelId: (channelId || "").trim(),
+          enabled: enabled !== undefined ? !!enabled : true,
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+      }
+
+      return helperResponseJson(res, 200, { success: true, message: "YouTube API configuration saved successfully." });
+    } catch (err: any) {
+      return helperResponseJson(res, 500, { success: false, error: err.message });
+    }
+  });
+
+  // Test Connection (Admin Only)
+  app.post("/api/youtube/api-import/test", async (req, res) => {
+    try {
+      const { apiKey, channelId, userUid } = req.body;
+      if (!userUid) {
+        return helperResponseJson(res, 400, { success: false, error: "Missing admin user session." });
+      }
+      const isAdmin = await verifyAdminRole(userUid);
+      if (!isAdmin) {
+        return helperResponseJson(res, 403, { success: false, error: "Forbidden: Admin privileges required." });
+      }
+
+      if (!apiKey || !channelId) {
+        return helperResponseJson(res, 400, { success: false, error: "Both API Key and Channel ID are required." });
+      }
+
+      try {
+        const testRes = await fetch(`https://www.googleapis.com/youtube/v3/channels?part=snippet&id=${channelId.trim()}&key=${apiKey.trim()}`);
+        if (!testRes.ok) {
+          const errorData = await testRes.json().catch(() => ({}));
+          const reason = parseYouTubeApiError({ response: { data: errorData } });
+          return helperResponseJson(res, 400, { success: false, error: reason });
+        }
+
+        const data = await testRes.json();
+        if (!data.items || data.items.length === 0) {
+          return helperResponseJson(res, 400, { success: false, error: "Invalid Channel ID: Channel not found." });
+        }
+
+        return helperResponseJson(res, 200, { success: true, message: "Test connection successful! Channel found: " + data.items[0].snippet.title });
+      } catch (fetchErr: any) {
+        console.error("Fetch error during test:", fetchErr);
+        return helperResponseJson(res, 400, { success: false, error: "Network Error: Failed to contact YouTube." });
+      }
+    } catch (err: any) {
+      return helperResponseJson(res, 500, { success: false, error: err.message });
+    }
+  });
+
+  // Connect Channel & Perform Full Sync (Admin Only)
+  app.post("/api/youtube/api-import/connect", async (req, res) => {
+    try {
+      const { apiKey, channelId, userUid } = req.body;
+      if (!userUid) {
+        return helperResponseJson(res, 400, { success: false, error: "Missing admin user session." });
+      }
+      const isAdmin = await verifyAdminRole(userUid);
+      if (!isAdmin) {
+        return helperResponseJson(res, 403, { success: false, error: "Forbidden: Admin privileges required." });
+      }
+
+      if (!apiKey || !channelId) {
+        return helperResponseJson(res, 400, { success: false, error: "Both API Key and Channel ID are required." });
+      }
+
+      // 1. Save Config Details First
+      if (db) {
+        await setDoc(doc(db, "appSettings", "youtube_api_config"), {
+          apiKey: apiKey.trim(),
+          channelId: channelId.trim(),
+          enabled: true,
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+      }
+
+      // 2. Automatically Run Full Synchronization
+      const syncResult = await syncAllYouTubeData(apiKey, channelId);
+
+      return helperResponseJson(res, 200, {
+        success: true,
+        message: "Channel connected successfully! " + syncResult.message,
+        details: syncResult.details
+      });
+    } catch (err: any) {
+      console.error("Error connecting YouTube channel:", err);
+      return helperResponseJson(res, 500, { success: false, error: err.message || "Failed to connect and sync channel." });
+    }
+  });
+
+  // Sync Channel On-Demand (Admin Only)
+  app.post("/api/youtube/api-import/sync-channel", async (req, res) => {
+    try {
       const { userUid } = req.body;
-      if (userUid) {
-        const isAdmin = await verifyAdminRole(userUid);
-        if (!isAdmin) {
-          return helperResponseJson(res, 403, { success: false, error: "Forbidden: Admin privileges required." });
-        }
+      if (!userUid) {
+        return helperResponseJson(res, 400, { success: false, error: "Missing admin user session." });
+      }
+      const isAdmin = await verifyAdminRole(userUid);
+      if (!isAdmin) {
+        return helperResponseJson(res, 403, { success: false, error: "Forbidden: Admin privileges required." });
+      }
+
+      const config = await getYouTubeApiConfig();
+      if (!config || !config.apiKey || !config.channelId) {
+        return helperResponseJson(res, 400, { success: false, error: "YouTube API not connected. Please connect first." });
+      }
+
+      const syncResult = await syncAllYouTubeData(config.apiKey, config.channelId);
+      return helperResponseJson(res, 200, {
+        success: true,
+        message: syncResult.message,
+        details: syncResult.details
+      });
+    } catch (err: any) {
+      console.error("Error in sync-channel:", err);
+      return helperResponseJson(res, 500, { success: false, error: err.message || "Synchronization failed." });
+    }
+  });
+
+  // Disconnect API (Admin Only)
+  app.post("/api/youtube/api-import/disconnect", async (req, res) => {
+    try {
+      const { userUid } = req.body;
+      if (!userUid) {
+        return helperResponseJson(res, 400, { success: false, error: "Missing admin user session." });
+      }
+      const isAdmin = await verifyAdminRole(userUid);
+      if (!isAdmin) {
+        return helperResponseJson(res, 403, { success: false, error: "Forbidden: Admin privileges required." });
       }
 
       if (db) {
-        let targetDocId = id;
-        const directDoc = doc(db, "manual_youtube_live", id);
-        const directSnap = await getDoc(directDoc);
-        if (!directSnap.exists()) {
-          const q = query(collection(db, "manual_youtube_live"), where("videoId", "==", id));
-          const querySnap = await getDocs(q);
-          if (!querySnap.empty) {
-            targetDocId = querySnap.docs[0].id;
-          }
-        }
-        await deleteDoc(doc(db, "manual_youtube_live", targetDocId));
-      } else {
-        manualLives = manualLives.filter(l => l.id !== id && l.videoId !== id);
+        await deleteDoc(doc(db, "appSettings", "youtube_api_config"));
+        await deleteDoc(doc(db, "appSettings", "youtube_api_channel"));
       }
 
-      return helperResponseJson(res, 200, { success: true, message: "Live stream deleted successfully!" });
+      return helperResponseJson(res, 200, { success: true, message: "API disconnected successfully!" });
     } catch (err: any) {
-      console.error("Error deleting live stream:", err);
-      return helperResponseJson(res, 500, { success: false, error: err.message || "Failed to delete live stream." });
+      return helperResponseJson(res, 500, { success: false, error: err.message });
     }
   });
 
