@@ -36,10 +36,10 @@ const getBaseUrl = () => {
     const hostname = window.location.hostname;
     if (hostname === 'localhost' || hostname === '127.0.0.1') {
       return 'http://localhost:3000';
-    } else if (hostname.includes('titanesp.site')) {
-      return 'https://titanesp.site';
-    } else {
+    } else if (hostname.includes('run.app') || hostname.includes('aistudio') || hostname.includes('google')) {
       return window.location.origin;
+    } else {
+      return 'https://titanesp.site';
     }
   }
   return 'https://titanesp.site';

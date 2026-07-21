@@ -1113,12 +1113,17 @@ async function startServer() {
       let phonepeSignature = "";
       let phonepeBase64Payload = "";
       if (isPhonePe) {
+        const protocol = req.secure || req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
+        const host = req.get("host") || "localhost:3000";
+        const backendBaseUrl = (host.includes("localhost") || host.includes("127.0.0.1") || host.includes("run.app") || host.includes("aistudio")) 
+          ? `${protocol}://${host}` 
+          : `https://titanesp.site`;
         const phonepePayload = {
           merchantId: activeConfig.phonepeMerchantId,
           merchantTransactionId: orderId,
           amount: Number(amount) * 100, // PhonePe takes amount in paise
-          redirectUrl: `http://localhost:3000/api/payments/phonepe/callback`,
-          callbackUrl: `http://localhost:3000/api/payments/phonepe/callback`,
+          redirectUrl: `${backendBaseUrl}/api/payments/phonepe/callback`,
+          callbackUrl: `${backendBaseUrl}/api/payments/phonepe/callback`,
           mobileNumber: "9999999999",
           paymentInstrument: {
             type: "PAY_PAGE"

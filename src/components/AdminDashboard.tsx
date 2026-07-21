@@ -282,10 +282,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       const hostname = window.location.hostname;
       if (hostname === 'localhost' || hostname === '127.0.0.1') {
         return 'http://localhost:3000';
-      } else if (hostname.includes('titanesp.site')) {
-        return 'https://titanesp.site';
-      } else {
+      } else if (hostname.includes('run.app') || hostname.includes('aistudio') || hostname.includes('google')) {
         return window.location.origin;
+      } else {
+        return 'https://titanesp.site';
       }
     }
     return 'https://titanesp.site';
@@ -4483,8 +4483,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                       </div>
 
                       <div className="bg-neutral-900/80 p-2 rounded-lg text-[9px] text-neutral-400 font-mono space-y-1">
-                        <p><span className="text-gold-400">Callback URL:</span> http://localhost:3000/api/payments/zapupi/callback</p>
-                        <p><span className="text-gold-400">Webhook URL:</span> http://localhost:3000/api/payments/zapupi/webhook</p>
+                        <p><span className="text-gold-400">Callback URL:</span> {getBaseUrl()}/api/payments/zapupi/callback</p>
+                        <p><span className="text-gold-400">Webhook URL:</span> {getBaseUrl()}/api/payments/zapupi/webhook</p>
                       </div>
                     </div>
 
