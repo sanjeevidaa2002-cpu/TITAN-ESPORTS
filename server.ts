@@ -218,23 +218,13 @@ async function startServer() {
 
   // Rebuilt Logger following comprehensive error logging requirements
   function logYtModule(
-    type: "REQUEST" | "RESPONSE" | "GOOGLE_API" | "DATABASE" | "PROXY" | "AUTH",
+    type: "REQUEST" | "RESPONSE" | "GOOGLE_API" | "DATABASE" | "PROXY" | "AUTH" | "ERROR",
     message: string,
     details?: any
   ) {
     const timestamp = new Date().toISOString();
     console.log(`[YT_REBUILT] [${timestamp}] [${type}] ${message}`, details ? JSON.stringify(details) : "");
   }
-
-  // Secure local fallback config
-  let localYouTubeConfig: YouTubeConfig = {
-    enabled: true,
-    apiKey: "AIzaSyDnjQ1CT7epD61l5dgzGqMxeXAWDUG-dhw",
-    channelId: "UCjqzz1wYC3zdpLEHVxjcTEQ",
-    cacheDurationMinutes: 15,
-    autoSync: true,
-    updatedAt: new Date().toISOString()
-  };
 
   // Memory cache store
   let ytChannelCache: any = null;
@@ -290,10 +280,10 @@ async function startServer() {
   function validateCredentials(apiKey: string, channelId: string) {
     logYtModule("AUTH", "Validating credentials format...");
     if (!apiKey || typeof apiKey !== "string" || apiKey.trim() === "") {
-      throw new Error("Invalid API Key: API Key is required and cannot be empty.");
+      throw new Error("Missing API Key: YouTube Data API v3 Key is required.");
     }
     if (!channelId || typeof channelId !== "string" || channelId.trim() === "") {
-      throw new Error("Invalid Channel ID: Channel ID is required and cannot be empty.");
+      throw new Error("Missing Channel ID: YouTube Channel ID is required.");
     }
 
     const cleanKey = apiKey.trim();
@@ -306,12 +296,12 @@ async function startServer() {
 
     // Check channel ID prefix
     if (!cleanChannel.startsWith("UC")) {
-      throw new Error("Invalid Channel ID: YouTube channel IDs must start with the 'UC' prefix. Please check for typos.");
+      throw new Error("Invalid Channel ID: YouTube channel IDs must start with the 'UC' prefix.");
     }
 
     // Check channel ID length
     if (cleanChannel.length !== 24) {
-      throw new Error(`Invalid Channel ID: YouTube channel IDs must be exactly 24 characters long (entered ${cleanChannel.length} chars).`);
+      throw new Error(`Invalid Channel ID: YouTube channel IDs must be exactly 24 characters long.`);
     }
     logYtModule("AUTH", "Credentials format validation succeeded.");
   }
@@ -325,8 +315,8 @@ async function startServer() {
     try {
       response = await fetch(url);
     } catch (netErr: any) {
-      logYtModule("GOOGLE_API", `Network connection failure reaching Google servers: ${netErr.message}`);
-      throw new Error("Google API Unreachable: A network connection failure occurred. Please verify your internet and proxy connections.");
+      logYtModule("ERROR", `Network connection failure reaching Google servers: ${netErr.message}`);
+      throw new Error("Network connection failed: Google API is unreachable.");
     }
 
     const rawText = await response.text();
@@ -337,8 +327,8 @@ async function startServer() {
       parsedData = JSON.parse(rawText);
       logYtModule("PROXY", "Successfully parsed Google API JSON response.");
     } catch (parseErr: any) {
-      logYtModule("PROXY", `Unable to parse Google response as JSON. Raw preview: ${rawText.substring(0, 150)}`);
-      throw new Error("Google API Error: The Google server returned an invalid, non-JSON response payload.");
+      logYtModule("ERROR", `Unable to parse Google response as JSON. Raw preview: ${rawText.substring(0, 150)}`);
+      throw new Error("Invalid JSON response: The Google server returned an invalid, non-JSON response payload.");
     }
 
     if (!response.ok) {
@@ -347,7 +337,7 @@ async function startServer() {
       const firstError = googleError?.errors?.[0] || {};
       const reason = (firstError.reason || "").toLowerCase();
 
-      logYtModule("GOOGLE_API", `Google API Error - Status: ${response.status}, Reason: ${reason}, Message: ${googleError?.message}`);
+      logYtModule("ERROR", `Google API Error - Status: ${response.status}, Reason: ${reason}, Message: ${googleError?.message}`);
 
       if (message.includes("api key not valid") || reason === "keyinvalid" || (response.status === 400 && message.includes("key"))) {
         throw new Error("Invalid API Key: The specified YouTube Data API v3 Key is invalid or restricted.");
@@ -359,16 +349,34 @@ async function startServer() {
         throw new Error("YouTube Data API v3 is disabled: Please enable the YouTube Data API v3 in your Google Cloud Project Console.");
       }
       if (reason === "quotaexceeded" || message.includes("quota") || (response.status === 403 && message.includes("quota"))) {
-        throw new Error("API Quota Exceeded: The YouTube Data API v3 daily quota limit is exhausted. Try again later.");
+        throw new Error("API quota exceeded: The YouTube Data API v3 daily quota limit is exhausted. Try again later.");
       }
-      if (reason === "forbidden" || reason === "unauthorized" || response.status === 403) {
-        throw new Error("Unauthorized Request: Google API access forbidden. Check key restrictions or channel privacy settings.");
+      if (reason === "forbidden" || reason === "unauthorized" || response.status === 403 || response.status === 401) {
+        throw new Error("Unauthorized request: Google API access forbidden. Check key restrictions or channel privacy settings.");
       }
 
       throw new Error(`Google API Error: ${googleError?.message || response.statusText || "Request failed"}`);
     }
 
     return parsedData;
+  }
+
+  function formatChannelForUI(channelData: any) {
+    if (!channelData) return null;
+    return {
+      ...channelData,
+      id: channelData.channelId || channelData.id || "",
+      title: channelData.channelName || channelData.title || "TITAN ESP",
+      description: channelData.description || "",
+      customUrl: channelData.channelHandle || channelData.customUrl || "",
+      publishedAt: channelData.publishedAt || "",
+      country: channelData.country || "Global",
+      logo: channelData.profileImage || channelData.logo || "",
+      banner: channelData.bannerImage || channelData.banner || "",
+      subscribers: typeof channelData.subscriberCount !== 'undefined' ? Number(channelData.subscriberCount) : (Number(channelData.subscribers) || 0),
+      views: typeof channelData.viewCount !== 'undefined' ? Number(channelData.viewCount) : (Number(channelData.views) || 0),
+      videosCount: typeof channelData.videoCount !== 'undefined' ? Number(channelData.videoCount) : (Number(channelData.videosCount) || 0)
+    };
   }
 
   // Fetch full channel details from YouTube Data API v3
@@ -422,7 +430,7 @@ async function startServer() {
         await setDoc(channelDocRef, channelData, { merge: true });
         logYtModule("DATABASE", "Successfully saved channel statistics to Firestore.");
       } catch (dbErr: any) {
-        logYtModule("DATABASE", `Failed to save channel stats to Firestore: ${dbErr?.message || dbErr}`);
+        logYtModule("ERROR", `Failed to save channel stats to Firestore: ${dbErr?.message || dbErr}`);
       }
     } else {
       logYtModule("DATABASE", "Database is unavailable. Using local fallback.");
@@ -506,7 +514,7 @@ async function startServer() {
           const detailsItem = details.items?.[0];
           viewerCount = parseInt(detailsItem?.liveStreamingDetails?.concurrentViewers, 10) || 0;
         } catch (err) {
-          logYtModule("GOOGLE_API", "Unable to retrieve active viewers stream telemetry.");
+          logYtModule("ERROR", "Unable to retrieve active viewers stream telemetry.");
         }
 
         activeLive = {
@@ -532,7 +540,7 @@ async function startServer() {
         publishedAt: v.snippet?.publishedAt || ""
       })).filter((item: any) => item.id !== "");
     } catch (err) {
-      logYtModule("GOOGLE_API", "Failed to retrieve upcoming scheduled streams.");
+      logYtModule("ERROR", "Failed to retrieve upcoming scheduled streams.");
     }
 
     return {
@@ -570,7 +578,7 @@ async function startServer() {
     }
   });
 
-  // 2. Save configuration parameters
+  // 2. Save configuration parameters (WITH PRE-SAVE VALIDATION)
   app.post("/api/youtube/config", async (req, res) => {
     logYtModule("REQUEST", "POST /api/youtube/config requested");
     try {
@@ -582,8 +590,13 @@ async function startServer() {
         finalApiKey = saved.apiKey;
       }
 
-      // Format validation prior to saving
+      // Pre-save validation (throws descriptive format errors or fails fast)
       validateCredentials(finalApiKey, channelId);
+
+      // Verify that the credentials can actually fetch channel details! (Ensures absolute correctness)
+      logYtModule("PROXY", `Verifying configuration with Google API prior to saving...`);
+      const channelDetails = await fetchChannelDetails(finalApiKey, channelId);
+      logYtModule("PROXY", `Verification successful! Connected to channel: ${channelDetails.channelName}`);
 
       let cacheMinutes = 15;
       if (cacheDurationMinutes !== undefined && cacheDurationMinutes !== null) {
@@ -607,10 +620,10 @@ async function startServer() {
       if (db) {
         const docRef = doc(db, "appSettings", "youtube");
         await setDoc(docRef, configData);
-        logYtModule("DATABASE", "Successfully saved YouTube settings to Firestore.");
+        logYtModule("DATABASE", "Successfully saved validated YouTube settings to Firestore.");
       }
 
-      // Clear memory caches on settings change
+      // Clear memory caches on settings change to force reload
       ytChannelCache = null;
       ytVideosCache = [];
       ytShortsCache = [];
@@ -618,7 +631,6 @@ async function startServer() {
       ytCacheTimestamp = 0;
       ytLiveCacheTimestamp = 0;
 
-      logYtModule("PROXY", "All caches invalidated following configuration updates.");
       logYtModule("RESPONSE", "POST /api/youtube/config successfully completed.");
       return helperResponseJson(res, 200, { success: true, message: "YouTube Integration Settings saved successfully!" });
     } catch (err: any) {
@@ -627,7 +639,7 @@ async function startServer() {
     }
   });
 
-  // 3. Test Connection without saving
+  // 3. Test Connection without saving (OR AUTOMATICALLY SAVES/SYNCS IF SUCCESSFUL)
   app.post("/api/youtube/test-connection", async (req, res) => {
     logYtModule("REQUEST", "POST /api/youtube/test-connection requested");
     try {
@@ -650,17 +662,60 @@ async function startServer() {
       const channelDetails = await fetchChannelDetails(testApiKey, testChannelId);
       logYtModule("PROXY", `Connection verified! Linked channel: ${channelDetails.channelName}`);
       
+      // REQUIREMENT 12: On successful verification, save configuration, sync channel, and clear cache!
+      const configData: YouTubeConfig = {
+        enabled: true,
+        apiKey: testApiKey.trim(),
+        channelId: testChannelId.trim(),
+        cacheDurationMinutes: localYouTubeConfig.cacheDurationMinutes || 15,
+        autoSync: localYouTubeConfig.autoSync ?? true,
+        updatedAt: new Date().toISOString()
+      };
+
+      localYouTubeConfig = configData;
+      if (db) {
+        const docRef = doc(db, "appSettings", "youtube");
+        await setDoc(docRef, configData);
+        logYtModule("DATABASE", "Successfully saved validated YouTube settings to Firestore via Test Connection.");
+      }
+
+      // Save synced details to Firestore
+      await saveChannelDetailsToDb(channelDetails);
+
+      // Perform a full sync immediately of videos and live stream
+      let syncedVideos: any[] = [];
+      let syncedShorts: any[] = [];
+      let syncedLive: any = null;
+
+      try {
+        const syncItems = await fetchVideosAndShortsFromAPI(testApiKey, channelDetails.uploadsPlaylistId);
+        syncedVideos = syncItems.videos;
+        syncedShorts = syncItems.shorts;
+        syncedLive = await fetchLiveStatusFromAPI(testApiKey, testChannelId);
+      } catch (syncErr: any) {
+        logYtModule("ERROR", `Metadata sync following test connection hit a transient error: ${syncErr.message}`);
+      }
+
+      // Sync into memory cache
+      ytChannelCache = channelDetails;
+      ytVideosCache = syncedVideos;
+      ytShortsCache = syncedShorts;
+      ytLiveCache = syncedLive;
+      ytCacheTimestamp = Date.now();
+      ytLiveCacheTimestamp = Date.now();
+
       logYtModule("RESPONSE", "POST /api/youtube/test-connection successfully completed.");
       return helperResponseJson(res, 200, {
         success: true,
-        message: `Successfully connected to channel: ${channelDetails.channelName}! Google API is verified.`,
+        message: `Successfully connected to channel: ${channelDetails.channelName}! Configuration saved and synchronized immediately.`,
         channel: {
           id: channelDetails.channelId,
           title: channelDetails.channelName,
           thumbnail: channelDetails.profileImage,
           subscriberCount: channelDetails.subscriberCount,
           videoCount: channelDetails.videoCount,
-          viewCount: channelDetails.viewCount
+          viewCount: channelDetails.viewCount,
+          country: channelDetails.country
         }
       });
     } catch (err: any) {
@@ -698,13 +753,27 @@ async function startServer() {
 
       await saveChannelDetailsToDb(channelData);
 
+      // Perform deep sync on connection
+      let syncedVideos: any[] = [];
+      let syncedShorts: any[] = [];
+      let syncedLive: any = null;
+
+      try {
+        const syncItems = await fetchVideosAndShortsFromAPI(apiKey, channelData.uploadsPlaylistId);
+        syncedVideos = syncItems.videos;
+        syncedShorts = syncItems.shorts;
+        syncedLive = await fetchLiveStatusFromAPI(apiKey, channelId);
+      } catch (syncErr: any) {
+        logYtModule("ERROR", `Connection sync hit transient error: ${syncErr.message}`);
+      }
+
       // Save initial sync data into local memory cache
       ytChannelCache = channelData;
-      ytVideosCache = [];
-      ytShortsCache = [];
-      ytLiveCache = null;
+      ytVideosCache = syncedVideos;
+      ytShortsCache = syncedShorts;
+      ytLiveCache = syncedLive;
       ytCacheTimestamp = Date.now();
-      ytLiveCacheTimestamp = 0;
+      ytLiveCacheTimestamp = Date.now();
 
       logYtModule("RESPONSE", "POST /api/youtube/connect successfully completed.");
       return helperResponseJson(res, 200, {
@@ -821,7 +890,7 @@ async function startServer() {
       const cacheExpiry = (config.cacheDurationMinutes || 15) * 60 * 1000;
       if (ytChannelCache && (Date.now() - ytCacheTimestamp < cacheExpiry)) {
         logYtModule("PROXY", "Serving channel data from memory cache.");
-        return helperResponseJson(res, 200, ytChannelCache);
+        return helperResponseJson(res, 200, formatChannelForUI(ytChannelCache));
       }
 
       logYtModule("PROXY", "Channel cache missing or expired. Fetching fresh from Google APIs...");
@@ -832,7 +901,7 @@ async function startServer() {
       ytCacheTimestamp = Date.now();
 
       logYtModule("RESPONSE", "GET /api/youtube/channel successfully completed.");
-      return helperResponseJson(res, 200, freshChannel);
+      return helperResponseJson(res, 200, formatChannelForUI(freshChannel));
     } catch (err: any) {
       logYtModule("RESPONSE", `GET /api/youtube/channel failed: ${err.message}`);
       return helperResponseJson(res, 500, { success: false, error: err.message || "Failed to load channel details" });

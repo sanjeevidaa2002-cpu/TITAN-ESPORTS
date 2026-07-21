@@ -59,6 +59,23 @@ interface ChannelInfo {
   videosCount: number;
 }
 
+const normalizeChannel = (raw: any): ChannelInfo | null => {
+  if (!raw) return null;
+  return {
+    id: raw.channelId || raw.id || "",
+    title: raw.channelName || raw.title || "TITAN ESP",
+    description: raw.description || "",
+    customUrl: raw.channelHandle || raw.customUrl || "",
+    publishedAt: raw.publishedAt || "",
+    country: raw.country || "Global",
+    logo: raw.profileImage || raw.logo || "",
+    banner: raw.bannerImage || raw.banner || "",
+    subscribers: typeof raw.subscriberCount !== 'undefined' ? Number(raw.subscriberCount) : (Number(raw.subscribers) || 0),
+    views: typeof raw.viewCount !== 'undefined' ? Number(raw.viewCount) : (Number(raw.views) || 0),
+    videosCount: typeof raw.videoCount !== 'undefined' ? Number(raw.videoCount) : (Number(raw.videosCount) || 0)
+  };
+};
+
 interface VideoItem {
   id: string;
   title: string;
@@ -138,7 +155,7 @@ export const preloadYouTubeData = async () => {
 
     localStorage.setItem(YT_CACHE_KEY, JSON.stringify({
       config: configData,
-      channel: newChannel,
+      channel: normalizeChannel(newChannel),
       videos: newVideos,
       shorts: newShorts,
       liveData: newLive
@@ -185,7 +202,7 @@ export const YouTubeTab: React.FC = () => {
       try {
         const cache = JSON.parse(cachedStr);
         if (cache.config) setConfig(cache.config);
-        if (cache.channel) setChannel(cache.channel);
+        if (cache.channel) setChannel(normalizeChannel(cache.channel));
         if (cache.videos) setVideos(cache.videos);
         if (cache.shorts) setShorts(cache.shorts);
         if (cache.liveData) setLiveData(cache.liveData);
@@ -249,14 +266,14 @@ export const YouTubeTab: React.FC = () => {
         try { newLive = await liveRes.json(); } catch (_) {}
       }
 
-      if (newChannel) setChannel(newChannel);
+      if (newChannel) setChannel(normalizeChannel(newChannel));
       if (newVideos && newVideos.length > 0) setVideos(newVideos);
       if (newShorts && newShorts.length > 0) setShorts(newShorts);
       if (newLive) setLiveData(newLive);
 
       localStorage.setItem(YT_CACHE_KEY, JSON.stringify({
         config: configData,
-        channel: newChannel,
+        channel: normalizeChannel(newChannel),
         videos: newVideos,
         shorts: newShorts,
         liveData: newLive
@@ -321,8 +338,8 @@ export const YouTubeTab: React.FC = () => {
   const filteredVideos = videos
     .filter(video => {
       // Search term matching
-      const matchesSearch = video.title.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                            video.description.toLowerCase().includes(searchQuery.toLowerCase());
+      const matchesSearch = (video?.title || "").toLowerCase().includes((searchQuery || "").toLowerCase()) || 
+                            (video?.description || "").toLowerCase().includes((searchQuery || "").toLowerCase());
       
       // Duration filter matching
       if (filterDuration === 'short') return matchesSearch && video.durationSeconds < 240; // < 4 min
@@ -338,7 +355,7 @@ export const YouTubeTab: React.FC = () => {
     });
 
   const filteredShorts = shorts.filter(short => 
-    short.title.toLowerCase().includes(searchQuery.toLowerCase())
+    (short?.title || "").toLowerCase().includes((searchQuery || "").toLowerCase())
   );
 
   if (loading) {
@@ -430,7 +447,7 @@ export const YouTubeTab: React.FC = () => {
                   <span className="p-1 rounded-md bg-gold-500/10 text-gold-400 border border-gold-500/20 text-[9px] font-mono tracking-wider uppercase">VERIFIED</span>
                 </div>
                 <p className="text-[10px] text-neutral-400 font-mono tracking-wide">
-                  {channel.customUrl || `@${channel.title.toLowerCase().replace(/\s/g, '')}`} • {formatNumber(channel.subscribers)} subscribers
+                  {channel.customUrl || `@${(channel.title || '').toLowerCase().replace(/\s/g, '')}`} • {formatNumber(channel.subscribers)} subscribers
                 </p>
               </div>
 

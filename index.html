@@ -7,15 +7,26 @@
     <script>
       (function() {
         const handleWebSocketError = (event) => {
-          const message = String(event.message || (event.error && event.error.message) || (event.reason && (event.reason.message || event.reason)) || '');
-          if (
-            message.toLowerCase().includes('websocket') || 
-            message.toLowerCase().includes('web socket') ||
-            message.toLowerCase().includes('without opened')
-          ) {
-            event.preventDefault();
-            event.stopPropagation();
-          }
+          try {
+            const message = String(
+              event.message || 
+              (event.error && (event.error.message || event.error)) || 
+              (event.reason && (event.reason.message || event.reason)) || 
+              ''
+            );
+            const lowerMessage = message.toLowerCase();
+            if (
+              lowerMessage.includes('websocket') || 
+              lowerMessage.includes('web socket') ||
+              lowerMessage.includes('without opened') ||
+              lowerMessage.includes('closeevent') ||
+              lowerMessage.includes('ws://') ||
+              lowerMessage.includes('wss://')
+            ) {
+              event.preventDefault();
+              event.stopPropagation();
+            }
+          } catch (_) {}
         };
         window.addEventListener('unhandledrejection', handleWebSocketError, true);
         window.addEventListener('error', handleWebSocketError, true);

@@ -326,7 +326,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
         const channelRes = await fetch('/api/youtube/channel');
         if (channelRes.ok && (channelRes.headers.get("content-type") || "").includes("application/json")) {
           try {
-            setYtChannelInfo(await channelRes.json());
+            const rawChannel = await channelRes.json();
+            if (rawChannel) {
+              setYtChannelInfo({
+                id: rawChannel.id || rawChannel.channelId || "",
+                title: rawChannel.title || rawChannel.channelName || "TITAN ESP",
+                logo: rawChannel.logo || rawChannel.profileImage || "",
+                subscribers: typeof rawChannel.subscribers !== 'undefined' ? rawChannel.subscribers : (rawChannel.subscriberCount || 0),
+                views: typeof rawChannel.views !== 'undefined' ? rawChannel.views : (rawChannel.viewCount || 0),
+                videosCount: typeof rawChannel.videosCount !== 'undefined' ? rawChannel.videosCount : (rawChannel.videoCount || 0),
+                country: rawChannel.country || 'Global'
+              });
+            }
           } catch (_) {}
         }
         

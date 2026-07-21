@@ -11,34 +11,17 @@ if (typeof window !== 'undefined') {
     
     const parts: string[] = [];
     
-    // Scan all enumerable properties of the error object
     try {
-      for (const key in reason) {
-        try {
-          const val = reason[key];
-          if (val && typeof val === 'string') {
-            parts.push(val);
-          }
-        } catch (_) {}
-      }
+      if (reason.message) parts.push(String(reason.message));
+      if (reason.reason) parts.push(String(reason.reason));
+      if (reason.stack) parts.push(String(reason.stack));
+      if (reason.type) parts.push(String(reason.type));
+      if (reason.code) parts.push(String(reason.code));
+      if (reason.name) parts.push(String(reason.name));
     } catch (_) {}
-
-    if (reason.message) parts.push(String(reason.message));
-    if (reason.reason) parts.push(String(reason.reason));
-    if (reason.stack) parts.push(String(reason.stack));
-    if (reason.type) parts.push(String(reason.type));
-    
-    if (reason.target) {
-      if (reason.target.url) parts.push(String(reason.target.url));
-      if (reason.target.constructor && reason.target.constructor.name) {
-        parts.push(reason.target.constructor.name);
-      }
-    }
-    
-    parts.push(String(reason));
     
     try {
-      parts.push(JSON.stringify(reason));
+      parts.push(String(reason));
     } catch (_) {}
     
     return parts.join(' ').toLowerCase();
@@ -62,7 +45,7 @@ if (typeof window !== 'undefined') {
   };
 
   window.addEventListener('unhandledrejection', (event) => {
-    if (isViteWsError(event.reason) || isViteWsError(event)) {
+    if (isViteWsError(event.reason)) {
       event.preventDefault();
       event.stopPropagation();
     }
@@ -70,7 +53,7 @@ if (typeof window !== 'undefined') {
 
   window.addEventListener('error', (event) => {
     const message = event.error || event.message || '';
-    if (isViteWsError(message) || isViteWsError(event)) {
+    if (isViteWsError(message)) {
       event.preventDefault();
       event.stopPropagation();
     }
