@@ -78,9 +78,17 @@ async function verifyAdminRole(userUid: string): Promise<boolean> {
   return false;
 }
 
-// Local memory fallback store in case Firestore Admin SDK hits PERMISSION_DENIED or other service-level access limitations.
-// This guarantees that the YouTube tab configurations will still save, synchronize, and function fully in-memory if the backend Firestore client is blocked.
-let localYouTubeConfig: any = {
+interface YouTubeConfig {
+  enabled: boolean;
+  apiKey: string;
+  channelId: string;
+  cacheDurationMinutes: number;
+  autoSync: boolean;
+  updatedAt: string;
+}
+
+// Local memory fallback store in case Firestore Admin SDK hits ACCESS_LIMITS or other issues.
+let localYouTubeConfig: YouTubeConfig = {
   enabled: true,
   apiKey: "AIzaSyDnjQ1CT7epD61l5dgzGqMxeXAWDUG-dhw",
   channelId: "UCjqzz1wYC3zdpLEHVxjcTEQ",
@@ -101,7 +109,7 @@ async function bootstrapYouTubeConfig() {
         cacheDurationMinutes: 15,
         autoSync: true,
         updatedAt: new Date().toISOString()
-      });
+      }, { merge: true });
       console.log("YouTube Config bootstrapped successfully to Firestore!");
     }
   } catch (err: any) {
@@ -204,15 +212,31 @@ async function startServer() {
     }
   });
 
-  // Memory Caching Engine
-  interface CacheEntry<T> {
-    data: T;
-    timestamp: number;
+  // =========================================================================
+  // NEW YOUTUBE INTEGRATION MODULE (REBUILT FROM SCRATCH)
+  // =========================================================================
+
+  // Custom Logger for comprehensive logging requirements
+  function logYouTube(
+    category: "Incoming Request" | "Outgoing Request" | "Google API Response" | "Database Save" | "JSON Parse" | "Proxy Status",
+    message: string,
+    details?: any
+  ) {
+    const timestamp = new Date().toISOString();
+    console.log(
+      `[${timestamp}] [YouTube API Integration] [${category}] ${message} ${
+        details ? " | Details: " + (typeof details === "object" ? JSON.stringify(details) : details) : ""
+      }`
+    );
   }
-  let channelCache: CacheEntry<any> | null = null;
-  let videosCache: CacheEntry<any[]> | null = null;
-  let shortsCache: CacheEntry<any[]> | null = null;
-  let liveCache: CacheEntry<any> | null = null;
+
+  // Memory cache store & fallback config
+  let ytChannelCache: any = null;
+  let ytVideosCache: any[] = [];
+  let ytShortsCache: any[] = [];
+  let ytLiveCache: any = null;
+  let ytCacheTimestamp = 0;
+  let ytLiveCacheTimestamp = 0;
 
   // Helper to parse ISO 8601 duration to seconds
   function parseDurationToSeconds(duration: string): number {
@@ -224,123 +248,200 @@ async function startServer() {
     return hours * 3600 + minutes * 60 + seconds;
   }
 
-  // Helper to fetch YouTube Config from Firestore securely using Firebase Client SDK
-  async function getYouTubeConfig() {
+  // Securely retrieve saved config from Firestore
+  async function getYouTubeConfigSecure(): Promise<YouTubeConfig> {
     try {
       if (db) {
+        logYouTube("Proxy Status", "Retrieving YouTube configuration from Firestore...");
         const docRef = doc(db, "appSettings", "youtube");
         const docSnap = await getDoc(docRef);
         if (docSnap.exists()) {
-          const dbData = docSnap.data();
+          const dbData = docSnap.data() as Partial<YouTubeConfig>;
           if (dbData) {
-            localYouTubeConfig = { ...localYouTubeConfig, ...dbData };
+            localYouTubeConfig = {
+              enabled: dbData.enabled ?? localYouTubeConfig.enabled,
+              apiKey: dbData.apiKey ?? localYouTubeConfig.apiKey,
+              channelId: dbData.channelId ?? localYouTubeConfig.channelId,
+              cacheDurationMinutes: dbData.cacheDurationMinutes ?? localYouTubeConfig.cacheDurationMinutes,
+              autoSync: dbData.autoSync ?? localYouTubeConfig.autoSync,
+              updatedAt: dbData.updatedAt ?? localYouTubeConfig.updatedAt,
+            };
+            logYouTube("Proxy Status", "Config synced with Firestore successfully.");
           }
-          return dbData;
+        } else {
+          logYouTube("Proxy Status", "No YouTube config found in Firestore. Using local in-memory fallback.");
         }
       } else {
-        console.warn("Firestore db object is not initialized. Using local fallback instead.");
+        logYouTube("Proxy Status", "Database is unavailable. Using in-memory configuration.");
       }
     } catch (err: any) {
-      console.warn("Firestore Client SDK inaccessible:", err?.message || err);
+      logYouTube("Proxy Status", "Failed to retrieve Firestore YouTube config. Using fallback.", err?.message || err);
     }
     return localYouTubeConfig;
   }
 
-  // Helper to make API calls to YouTube with robust Google API error parsing
-  async function fetchFromYouTube(url: string) {
-    let res;
-    try {
-      res = await fetch(url);
-    } catch (networkErr: any) {
-      throw new Error(`YouTube API Connection Failed: Please verify the server's network connection. Detail: ${networkErr?.message || networkErr}`);
+  // Validate YouTube API credentials format strictly
+  function validateYouTubeCredentials(apiKey: string, channelId: string) {
+    if (!apiKey || typeof apiKey !== "string" || apiKey.trim() === "") {
+      throw new Error("Invalid API Key: API Key is required and cannot be empty.");
+    }
+    if (!channelId || typeof channelId !== "string" || channelId.trim() === "") {
+      throw new Error("Invalid Channel ID: Channel ID is required and cannot be empty.");
     }
 
-    if (!res.ok) {
-      let errText = "";
-      try {
-        errText = await res.text();
-      } catch (_) {}
+    const cleanKey = apiKey.trim();
+    const cleanChannel = channelId.trim();
 
-      let parsedError: any = null;
-      try {
-        parsedError = JSON.parse(errText);
-      } catch (_) {}
-
-      if (parsedError && parsedError.error) {
-        const gError = parsedError.error;
-        const msg = (gError.message || "").toLowerCase();
-        const firstError = gError.errors?.[0] || {};
-        const reason = (firstError.reason || "").toLowerCase();
-
-        if (msg.includes("api key not valid") || msg.includes("keyinvalid") || reason === "keyinvalid") {
-          throw new Error("Invalid YouTube API Key. Please verify your credentials in the Google Cloud Console.");
-        }
-        if (msg.includes("expired") || reason === "expired") {
-          throw new Error("The YouTube API Key has expired. Please generate a new one in the Google Cloud Console.");
-        }
-        if (msg.includes("youtube data api v3 has not been used") || reason === "accessnotconfigured" || reason === "servicedisabled") {
-          throw new Error("YouTube Data API v3 is disabled in your Google Cloud Project. Please enable it in the API Console.");
-        }
-        if (msg.includes("quota") || reason === "quotaexceeded") {
-          throw new Error("YouTube Data API quota exceeded. Please try again later or request a quota increase.");
-        }
-        if (reason === "forbidden" || reason === "unauthorized" || res.status === 403) {
-          throw new Error("Unauthorized access to YouTube API. Please verify your API Key permissions and IP restrictions.");
-        }
-        
-        throw new Error(`YouTube API Error: ${gError.message || res.statusText}`);
-      }
-
-      throw new Error(`YouTube API Error: ${res.status} - ${errText || res.statusText}`);
+    if (!cleanKey.startsWith("AIzaSy")) {
+      throw new Error("Invalid API Key: A valid Google Cloud API key must begin with the 'AIzaSy' prefix. Please check for errors.");
     }
 
-    try {
-      return await res.json();
-    } catch (jsonErr: any) {
-      throw new Error(`YouTube API Parsing Failed: Server returned an invalid response. Detail: ${jsonErr?.message || jsonErr}`);
+    if (!cleanChannel.startsWith("UC")) {
+      throw new Error("Invalid Channel ID: YouTube channel IDs must start with the 'UC' prefix. Please check for typos.");
+    }
+
+    if (cleanChannel.length !== 24) {
+      throw new Error(`Invalid Channel ID: YouTube channel IDs must be exactly 24 characters long (entered ${cleanChannel.length} chars).`);
     }
   }
 
-  // Combined caching helper for Videos and Shorts (retrieves uploaded playlist items once)
-  async function getVideosAndShortsCached(config: any) {
-    const cacheExpiry = (config.cacheDurationMinutes || 15) * 60 * 1000;
-    if (videosCache && shortsCache && (Date.now() - videosCache.timestamp < cacheExpiry)) {
-      return { videos: videosCache.data, shorts: shortsCache.data };
+  // Request wrapper to forward calls to Google YouTube API with clear error classification
+  async function fetchGoogleAPI(url: string) {
+    const maskedUrl = url.replace(/key=[^&]+/, "key=REDACTED");
+    logYouTube("Outgoing Request", `Fetching: ${maskedUrl}`);
+
+    let res;
+    try {
+      res = await fetch(url);
+    } catch (netErr: any) {
+      logYouTube("Google API Response", "Network failure when attempting to reach Google servers.");
+      throw new Error("Google API Unreachable: A network connection failure occurred. Please verify your internet/proxy connection.");
     }
 
-    const { apiKey, channelId } = config;
-    
-    // 1. Fetch channel details to retrieve uploads playlist ID if not cached
-    let uploadsPlaylistId = "";
-    if (channelCache && (Date.now() - channelCache.timestamp < cacheExpiry)) {
-      uploadsPlaylistId = channelCache.data.uploadsPlaylistId;
+    const responseText = await res.text();
+    logYouTube("Google API Response", `HTTP Status: ${res.status}`);
+
+    let responseData: any;
+    try {
+      responseData = JSON.parse(responseText);
+      logYouTube("JSON Parse", "Successfully parsed the JSON payload from Google server.");
+    } catch (parseErr: any) {
+      logYouTube("JSON Parse", `Unable to parse response as JSON. Content preview: ${responseText.substring(0, 150)}`);
+      throw new Error("Google API Unreachable: The server returned an invalid non-JSON payload (often due to proxy/network firewalls).");
+    }
+
+    if (!res.ok) {
+      const googleError = responseData?.error;
+      const message = (googleError?.message || "").toLowerCase();
+      const firstError = googleError?.errors?.[0] || {};
+      const reason = (firstError.reason || "").toLowerCase();
+
+      logYouTube("Google API Response", `Error Details - Code: ${googleError?.code || res.status}. Reason: ${reason}. Message: ${googleError?.message}`);
+
+      if (message.includes("api key not valid") || reason === "keyinvalid" || (res.status === 400 && message.includes("key"))) {
+        throw new Error("Invalid API Key: The specified YouTube Data API v3 Key is invalid or restricted.");
+      }
+      if (message.includes("expired") || reason === "expired") {
+        throw new Error("Expired API Key: The Google API Key used for this request has expired.");
+      }
+      if (reason === "accessnotconfigured" || reason === "servicedisabled" || message.includes("has not been used in project") || message.includes("disabled")) {
+        throw new Error("YouTube Data API v3 is disabled: Please enable the YouTube Data API v3 in your Google Cloud Project Console.");
+      }
+      if (reason === "quotaexceeded" || message.includes("quota") || (res.status === 403 && message.includes("quota"))) {
+        throw new Error("API Quota Exceeded: The YouTube Data API v3 daily quota limit is exhausted. Try again later.");
+      }
+      if (reason === "forbidden" || reason === "unauthorized" || res.status === 403) {
+        throw new Error("Unauthorized Request: Google API access forbidden. Check key restrictions or channel privacy settings.");
+      }
+      
+      throw new Error(`Google API Error: ${googleError?.message || res.statusText || "Request failed"}`);
+    }
+
+    return responseData;
+  }
+
+  // Fetch full Channel details from Google v3 API
+  async function fetchChannelDetails(apiKey: string, channelId: string) {
+    validateYouTubeCredentials(apiKey, channelId);
+
+    const url = `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics,contentDetails,brandingSettings&id=${channelId.trim()}&key=${apiKey.trim()}`;
+    const data = await fetchGoogleAPI(url);
+
+    if (!data.items || data.items.length === 0) {
+      throw new Error("Invalid Channel ID: No YouTube channel was found with the specified ID. Check for typos.");
+    }
+
+    const item = data.items[0];
+    const snippet = item.snippet || {};
+    const stats = item.statistics || {};
+    const brand = item.brandingSettings || {};
+    const contentDetails = item.contentDetails || {};
+
+    const logo = snippet.thumbnails?.high?.url || snippet.thumbnails?.medium?.url || snippet.thumbnails?.default?.url || "";
+    const banner = brand.image?.bannerExternalUrl || "";
+    const customUrl = snippet.customUrl || ""; 
+
+    const channelData = {
+      apiKey: apiKey.trim(),
+      channelId: item.id,
+      channelName: snippet.title || "TITAN ESP",
+      channelHandle: customUrl || `@${(snippet.title || "").toLowerCase().replace(/\s/g, "")}`,
+      channelUrl: customUrl ? `https://youtube.com/${customUrl}` : `https://youtube.com/channel/${item.id}`,
+      profileImage: logo,
+      bannerImage: banner,
+      subscriberCount: parseInt(stats.subscriberCount, 10) || 0,
+      videoCount: parseInt(stats.videoCount, 10) || 0,
+      viewCount: parseInt(stats.viewCount, 10) || 0,
+      description: snippet.description || "",
+      country: snippet.country || "Global",
+      publishedAt: snippet.publishedAt || "",
+      uploadsPlaylistId: contentDetails.relatedPlaylists?.uploads || "",
+      lastUpdated: new Date().toISOString()
+    };
+
+    return channelData;
+  }
+
+  // Save Channel details to Firestore securely
+  async function saveChannelDetailsToDb(channelData: any) {
+    logYouTube("Database Save", `Saving channel data to DB: ${channelData.channelName}`);
+    if (db) {
+      try {
+        const channelDocRef = doc(db, "appSettings", "youtube_channel");
+        await setDoc(channelDocRef, channelData, { merge: true });
+        logYouTube("Database Save", `Successfully saved YouTube channel stats to Firestore.`);
+      } catch (dbErr: any) {
+        logYouTube("Database Save", `Failed to save channel stats to Firestore. In-memory fallback used. Error: ${dbErr?.message || dbErr}`);
+      }
     } else {
-      const channelUrl = `https://www.googleapis.com/youtube/v3/channels?part=contentDetails&id=${channelId}&key=${apiKey}`;
-      const cData = await fetchFromYouTube(channelUrl);
-      uploadsPlaylistId = cData.items?.[0]?.contentDetails?.relatedPlaylists?.uploads || "";
+      logYouTube("Database Save", "Firestore DB is unavailable. Saving channel stats in-memory only.");
     }
+  }
 
+  // Fetch videos and shorts from the uploads playlist
+  async function fetchVideosAndShortsFromAPI(apiKey: string, uploadsPlaylistId: string) {
     if (!uploadsPlaylistId) {
-      throw new Error("Could not find uploads playlist for this channel.");
-    }
-
-    // 2. Fetch latest 50 playlist items
-    const playlistUrl = `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=${uploadsPlaylistId}&maxResults=50&key=${apiKey}`;
-    const pData = await fetchFromYouTube(playlistUrl);
-    const items = pData.items || [];
-    
-    if (items.length === 0) {
-      videosCache = { data: [], timestamp: Date.now() };
-      shortsCache = { data: [], timestamp: Date.now() };
+      logYouTube("Proxy Status", "No uploads playlist ID present. Skipping item sync.");
       return { videos: [], shorts: [] };
     }
 
-    const videoIds = items.map((item: any) => item.contentDetails.videoId);
+    const playlistUrl = `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=${uploadsPlaylistId}&maxResults=50&key=${apiKey}`;
+    const playlistData = await fetchGoogleAPI(playlistUrl);
+    const items = playlistData.items || [];
 
-    // 3. Fetch full video statistics and duration specs
+    if (items.length === 0) {
+      return { videos: [], shorts: [] };
+    }
+
+    const videoIds = items.map((item: any) => item.contentDetails?.videoId).filter(Boolean);
+    if (videoIds.length === 0) {
+      return { videos: [], shorts: [] };
+    }
+
+    // Fetch video duration metrics & view counts
     const detailsUrl = `https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics&id=${videoIds.join(",")}&key=${apiKey}`;
-    const dData = await fetchFromYouTube(detailsUrl);
-    const detailedVideos = dData.items || [];
+    const detailsData = await fetchGoogleAPI(detailsUrl);
+    const detailedVideos = detailsData.items || [];
 
     const parsedVideos: any[] = [];
     const parsedShorts: any[] = [];
@@ -348,17 +449,17 @@ async function startServer() {
     detailedVideos.forEach((v: any) => {
       const durationStr = v.contentDetails?.duration || "";
       const seconds = parseDurationToSeconds(durationStr);
-      // Classify as Short if <= 60s or contains hashtag in title/description
+      
       const isShort = seconds <= 60 || 
                       v.snippet?.title?.toLowerCase().includes("#shorts") || 
                       v.snippet?.description?.toLowerCase().includes("#shorts");
 
       const videoItem = {
         id: v.id,
-        title: v.snippet.title,
-        description: v.snippet.description,
-        publishedAt: v.snippet.publishedAt,
-        thumbnail: v.snippet.thumbnails?.maxres?.url || v.snippet.thumbnails?.high?.url || v.snippet.thumbnails?.medium?.url || v.snippet.thumbnails?.default?.url || "",
+        title: v.snippet?.title || "",
+        description: v.snippet?.description || "",
+        publishedAt: v.snippet?.publishedAt || "",
+        thumbnail: v.snippet?.thumbnails?.maxres?.url || v.snippet?.thumbnails?.high?.url || v.snippet?.thumbnails?.medium?.url || v.snippet?.thumbnails?.default?.url || "",
         duration: durationStr,
         durationSeconds: seconds,
         views: parseInt(v.statistics?.viewCount, 10) || 0,
@@ -373,44 +474,101 @@ async function startServer() {
       }
     });
 
-
-    videosCache = { data: parsedVideos, timestamp: Date.now() };
-    shortsCache = { data: parsedShorts, timestamp: Date.now() };
     return { videos: parsedVideos, shorts: parsedShorts };
   }
-  // ==========================================
 
-  // 1. Get YouTube config settings (excludes full API Key for security)
-  app.get("/api/youtube/config", async (req, res) => {
-    try {
-      const config = await getYouTubeConfig();
-      if (!config) {
-        return res.json({ enabled: false, channelId: "", hasApiKey: false });
+  // Fetch live streams and upcoming schedules
+  async function fetchLiveStatusFromAPI(apiKey: string, channelId: string) {
+    // Active streams check
+    const liveSearchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channelId}&type=video&eventType=live&key=${apiKey}`;
+    const liveData = await fetchGoogleAPI(liveSearchUrl);
+    const liveItems = liveData.items || [];
+
+    let activeLive: any = null;
+    if (liveItems.length > 0) {
+      const liveVideo = liveItems[0];
+      const liveVideoId = liveVideo.id?.videoId;
+
+      if (liveVideoId) {
+        const liveDetailsUrl = `https://www.googleapis.com/youtube/v3/videos?part=liveStreamingDetails,statistics&id=${liveVideoId}&key=${apiKey}`;
+        let viewerCount = 0;
+        try {
+          const details = await fetchGoogleAPI(liveDetailsUrl);
+          const detailsItem = details.items?.[0];
+          viewerCount = parseInt(detailsItem?.liveStreamingDetails?.concurrentViewers, 10) || 0;
+        } catch (err) {
+          logYouTube("Google API Response", "Could not load precise live concurrent user telemetry, falling back to 0.");
+        }
+
+        activeLive = {
+          id: liveVideoId,
+          title: liveVideo.snippet?.title || "",
+          description: liveVideo.snippet?.description || "",
+          thumbnail: liveVideo.snippet?.thumbnails?.high?.url || liveVideo.snippet?.thumbnails?.default?.url || "",
+          publishedAt: liveVideo.snippet?.publishedAt || "",
+          viewerCount: viewerCount
+        };
       }
+    }
+
+    // Upcoming schedules check
+    const upcomingSearchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channelId}&type=video&eventType=upcoming&key=${apiKey}`;
+    let upcomingStreams: any[] = [];
+    try {
+      const upcomingData = await fetchGoogleAPI(upcomingSearchUrl);
+      upcomingStreams = (upcomingData.items || []).map((v: any) => ({
+        id: v.id?.videoId || "",
+        title: v.snippet?.title || "",
+        description: v.snippet?.description || "",
+        thumbnail: v.snippet?.thumbnails?.high?.url || v.snippet?.thumbnails?.default?.url || "",
+        publishedAt: v.snippet?.publishedAt || ""
+      })).filter((item: any) => item.id !== "");
+    } catch (err) {
+      logYouTube("Google API Response", "Failed to retrieve upcoming scheduled live streams.");
+    }
+
+    return {
+      isLive: !!activeLive,
+      activeLive,
+      upcomingStreams
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // BACKEND API ENDPOINTS
+  // ---------------------------------------------------------------------------
+
+  // 1. Get configuration details (API key hidden/masked for user safety)
+  app.get("/api/youtube/config", async (req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    logYouTube("Incoming Request", "GET /api/youtube/config");
+    try {
+      const config = await getYouTubeConfigSecure();
       res.json({
         enabled: config.enabled ?? false,
         channelId: config.channelId ?? "",
         cacheDurationMinutes: config.cacheDurationMinutes ?? 15,
         autoSync: config.autoSync ?? true,
-        hasApiKey: !!config.apiKey
+        hasApiKey: !!(config.apiKey && config.apiKey.trim() !== "")
       });
     } catch (err: any) {
-      console.error("Error in app.get(/api/youtube/config):", err);
-      res.status(500).json({ error: err.message || "Internal server error" });
+      logYouTube("Proxy Status", `GET /api/youtube/config failed: ${err.message}`);
+      res.status(500).json({ error: err.message || "Failed to load configuration" });
     }
   });
 
-
-  // 2. Save YouTube configurations securely
+  // 2. Save configuration parameters
   app.post("/api/youtube/config", async (req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    logYouTube("Incoming Request", "POST /api/youtube/config");
     try {
       const { enabled, apiKey, channelId, cacheDurationMinutes, autoSync } = req.body;
       
       let finalApiKey = apiKey;
-      // If client didn't supply a key, use the existing one
-      if (!apiKey) {
-        const existing = await getYouTubeConfig();
-        finalApiKey = existing?.apiKey || "";
+      // Retain stored API key if client sends mask or empty string
+      if (!apiKey || apiKey === "••••••••" || apiKey.includes("••••")) {
+        const saved = await getYouTubeConfigSecure();
+        finalApiKey = saved.apiKey;
       }
 
       let cacheMinutes = 15;
@@ -421,7 +579,7 @@ async function startServer() {
         }
       }
 
-      const configData = {
+      const configData: YouTubeConfig = {
         enabled: !!enabled,
         apiKey: finalApiKey || "",
         channelId: channelId || "",
@@ -430,217 +588,346 @@ async function startServer() {
         updatedAt: new Date().toISOString()
       };
 
-      // Always save to the local in-memory store so it works offline/sandbox-isolated
+      // In-memory fallback
       localYouTubeConfig = configData;
 
       if (db) {
-        try {
-          const docRef = doc(db, "appSettings", "youtube");
-          await setDoc(docRef, configData);
-        } catch (err: any) {
-          console.warn("Failed to write YouTube config to remote Firestore. Saved locally in-memory instead. Error:", err?.message || err);
-        }
-      } else {
-        console.warn("Firestore db object is not initialized. Saved YouTube config locally in-memory.");
+        const docRef = doc(db, "appSettings", "youtube");
+        await setDoc(docRef, configData);
+        logYouTube("Database Save", "Saved configuration securely to Firestore database.");
       }
 
-      // Clear memory caches upon configuration change
-      channelCache = null;
-      videosCache = null;
-      shortsCache = null;
-      liveCache = null;
+      // Reset cache
+      ytChannelCache = null;
+      ytVideosCache = [];
+      ytShortsCache = [];
+      ytLiveCache = null;
+      ytCacheTimestamp = 0;
+      ytLiveCacheTimestamp = 0;
 
-      res.json({ success: true, message: "YouTube Integration Settings configured successfully!" });
+      logYouTube("Proxy Status", "Caches invalidated due to configuration updates.");
+      res.json({ success: true, message: "YouTube Integration Settings saved successfully!" });
     } catch (err: any) {
-      console.error("Error in app.post(/api/youtube/config):", err);
-      res.status(500).json({ error: err.message || "Internal server error" });
+      logYouTube("Proxy Status", `POST /api/youtube/config failed: ${err.message}`);
+      res.status(500).json({ error: err.message || "Failed to save configuration settings" });
     }
   });
 
+  // 3. Test Connection without saving
+  app.post("/api/youtube/test-connection", async (req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    logYouTube("Incoming Request", "POST /api/youtube/test-connection");
+    try {
+      const { apiKey, channelId } = req.body;
+      let testApiKey = apiKey;
+      let testChannelId = channelId;
 
-  // 3. Clear Cache & Manual Synchronization
+      if (!testApiKey || testApiKey === "••••••••" || testApiKey.includes("••••")) {
+        const saved = await getYouTubeConfigSecure();
+        testApiKey = saved.apiKey;
+      }
+      if (!testChannelId) {
+        const saved = await getYouTubeConfigSecure();
+        testChannelId = saved.channelId;
+      }
+
+      logYouTube("Proxy Status", `Verifying connection with API key prefix and Channel ID: ${testChannelId}`);
+      validateYouTubeCredentials(testApiKey, testChannelId);
+
+      const channelDetails = await fetchChannelDetails(testApiKey, testChannelId);
+      logYouTube("Proxy Status", `Test successful! Found channel: ${channelDetails.channelName}`);
+      
+      res.json({
+        success: true,
+        message: `Successfully connected to channel: ${channelDetails.channelName}! Google API and network are verified.`,
+        channel: {
+          id: channelDetails.channelId,
+          title: channelDetails.channelName,
+          thumbnail: channelDetails.profileImage,
+          subscriberCount: channelDetails.subscriberCount,
+          videoCount: channelDetails.videoCount,
+          viewCount: channelDetails.viewCount
+        }
+      });
+    } catch (err: any) {
+      logYouTube("Proxy Status", `Test Connection failed: ${err.message}`);
+      res.status(400).json({
+        success: false,
+        error: err.message || "Connection verification failed."
+      });
+    }
+  });
+
+  // 4. Connect Channel
+  app.post("/api/youtube/connect", async (req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    logYouTube("Incoming Request", "POST /api/youtube/connect");
+    try {
+      const { apiKey, channelId } = req.body;
+      validateYouTubeCredentials(apiKey, channelId);
+
+      const channelData = await fetchChannelDetails(apiKey, channelId);
+      
+      const configData: YouTubeConfig = {
+        enabled: true,
+        apiKey: apiKey.trim(),
+        channelId: channelId.trim(),
+        cacheDurationMinutes: 15,
+        autoSync: true,
+        updatedAt: new Date().toISOString()
+      };
+
+      localYouTubeConfig = configData;
+      if (db) {
+        const docRef = doc(db, "appSettings", "youtube");
+        await setDoc(docRef, configData);
+      }
+
+      await saveChannelDetailsToDb(channelData);
+
+      // Refresh memory cache
+      ytChannelCache = channelData;
+      ytVideosCache = [];
+      ytShortsCache = [];
+      ytLiveCache = null;
+      ytCacheTimestamp = Date.now();
+      ytLiveCacheTimestamp = 0;
+
+      logYouTube("Proxy Status", `Connected & saved channel credentials for: ${channelData.channelName}`);
+      res.json({
+        success: true,
+        message: `YouTube channel connected successfully!`,
+        channel: {
+          id: channelData.channelId,
+          title: channelData.channelName,
+          thumbnail: channelData.profileImage,
+          subscriberCount: channelData.subscriberCount,
+          videoCount: channelData.videoCount,
+          viewCount: channelData.viewCount
+        }
+      });
+    } catch (err: any) {
+      logYouTube("Proxy Status", `Connect failed: ${err.message}`);
+      res.status(400).json({ success: false, error: err.message || "Failed to connect YouTube channel." });
+    }
+  });
+
+  // 5. Disconnect Channel
+  app.post("/api/youtube/disconnect", async (req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    logYouTube("Incoming Request", "POST /api/youtube/disconnect");
+    try {
+      const configData: YouTubeConfig = {
+        enabled: false,
+        apiKey: "",
+        channelId: "",
+        cacheDurationMinutes: 15,
+        autoSync: true,
+        updatedAt: new Date().toISOString()
+      };
+
+      localYouTubeConfig = configData;
+      if (db) {
+        const docRef = doc(db, "appSettings", "youtube");
+        await setDoc(docRef, configData);
+
+        const channelDocRef = doc(db, "appSettings", "youtube_channel");
+        await setDoc(channelDocRef, {
+          apiKey: "",
+          channelId: "",
+          channelName: "",
+          channelHandle: "",
+          channelUrl: "",
+          profileImage: "",
+          bannerImage: "",
+          subscriberCount: 0,
+          videoCount: 0,
+          viewCount: 0,
+          description: "",
+          country: "",
+          publishedAt: "",
+          lastUpdated: new Date().toISOString()
+        });
+      }
+
+      ytChannelCache = null;
+      ytVideosCache = [];
+      ytShortsCache = [];
+      ytLiveCache = null;
+      ytCacheTimestamp = 0;
+      ytLiveCacheTimestamp = 0;
+
+      logYouTube("Proxy Status", "YouTube integration disconnected and caches cleared.");
+      res.json({ success: true, message: "YouTube integration disconnected successfully." });
+    } catch (err: any) {
+      logYouTube("Proxy Status", `Disconnect failed: ${err.message}`);
+      res.status(500).json({ success: false, error: err.message || "Failed to disconnect channel." });
+    }
+  });
+
+  // 6. Sync Now
   app.post("/api/youtube/sync", async (req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    logYouTube("Incoming Request", "POST /api/youtube/sync");
     try {
-      channelCache = null;
-      videosCache = null;
-      shortsCache = null;
-      liveCache = null;
-      res.json({ success: true, message: "Cache invalidated. Synced metadata successfully!" });
+      const config = await getYouTubeConfigSecure();
+      if (!config.enabled || !config.apiKey || !config.channelId) {
+        logYouTube("Proxy Status", "Synchronization aborted: YouTube is disconnected or credentials are missing.");
+        return res.status(400).json({ error: "YouTube Integration is disconnected. Configure credentials in the Admin Panel." });
+      }
+
+      const freshChannel = await fetchChannelDetails(config.apiKey, config.channelId);
+      await saveChannelDetailsToDb(freshChannel);
+
+      const { videos, shorts } = await fetchVideosAndShortsFromAPI(config.apiKey, freshChannel.uploadsPlaylistId);
+      const liveData = await fetchLiveStatusFromAPI(config.apiKey, config.channelId);
+
+      ytChannelCache = freshChannel;
+      ytVideosCache = videos;
+      ytShortsCache = shorts;
+      ytLiveCache = liveData;
+      ytCacheTimestamp = Date.now();
+      ytLiveCacheTimestamp = Date.now();
+
+      logYouTube("Proxy Status", `Synchronized and saved stats for channel: ${freshChannel.channelName}`);
+      res.json({ success: true, message: "YouTube channel synchronized successfully!", channel: freshChannel });
     } catch (err: any) {
-      console.error("Error in app.post(/api/youtube/sync):", err);
-      res.status(500).json({ error: err.message || "Internal server error" });
+      logYouTube("Proxy Status", `Manual Sync failed: ${err.message}`);
+      res.status(500).json({ error: err.message || "Manual Synchronization failed" });
     }
   });
 
-
-  // 4. Fetch Channel Profile Metadata
+  // 7. Get Channel Profile details
   app.get("/api/youtube/channel", async (req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    logYouTube("Incoming Request", "GET /api/youtube/channel");
     try {
-      const config = await getYouTubeConfig();
-      if (!config || !config.enabled || !config.apiKey || !config.channelId) {
+      const config = await getYouTubeConfigSecure();
+      if (!config.enabled || !config.apiKey || !config.channelId) {
         return res.status(400).json({ error: "YouTube Integration is disabled or not configured in Admin panel." });
       }
 
       const cacheExpiry = (config.cacheDurationMinutes || 15) * 60 * 1000;
-      if (channelCache && (Date.now() - channelCache.timestamp < cacheExpiry)) {
-        return res.json(channelCache.data);
+      if (ytChannelCache && (Date.now() - ytCacheTimestamp < cacheExpiry)) {
+        logYouTube("Proxy Status", "Serving YouTube Channel data from in-memory cache.");
+        return res.json(ytChannelCache);
       }
 
-      const { apiKey, channelId } = config;
-      const url = `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics,contentDetails,brandingSettings&id=${channelId}&key=${apiKey}`;
-      const data = await fetchFromYouTube(url);
-      
-      if (!data.items || data.items.length === 0) {
-        return res.status(404).json({ error: "YouTube Channel ID is invalid or does not exist. Please double-check the ID." });
-      }
+      logYouTube("Proxy Status", "Channel cache missing or expired. Fetching fresh from Google API...");
+      const freshChannel = await fetchChannelDetails(config.apiKey, config.channelId);
+      await saveChannelDetailsToDb(freshChannel);
 
-      const item = data.items[0];
-      const channelInfo = {
-        id: item.id,
-        title: item.snippet.title,
-        description: item.snippet.description,
-        customUrl: item.snippet.customUrl || "",
-        publishedAt: item.snippet.publishedAt,
-        country: item.snippet.country || "Global",
-        logo: item.snippet.thumbnails?.high?.url || item.snippet.thumbnails?.medium?.url || item.snippet.thumbnails?.default?.url || "",
-        banner: item.brandingSettings?.image?.bannerExternalUrl || "",
-        subscribers: parseInt(item.statistics.subscriberCount, 10) || 0,
-        views: parseInt(item.statistics.viewCount, 10) || 0,
-        videosCount: parseInt(item.statistics.videoCount, 10) || 0,
-        uploadsPlaylistId: item.contentDetails?.relatedPlaylists?.uploads || ""
-      };
+      ytChannelCache = freshChannel;
+      ytCacheTimestamp = Date.now();
 
-      // Persist the channel sync details to Firestore database safely
-      if (db) {
-        try {
-          const channelDocRef = doc(db, "appSettings", "youtube_channel");
-          await setDoc(channelDocRef, {
-            apiKey: apiKey || "",
-            channelId: channelInfo.id || "",
-            channelName: channelInfo.title || "",
-            channelUrl: channelInfo.customUrl ? `https://youtube.com/${channelInfo.customUrl}` : `https://youtube.com/channel/${channelInfo.id}`,
-            channelThumbnail: channelInfo.logo || "",
-            subscriberCount: channelInfo.subscribers,
-            videoCount: channelInfo.videosCount,
-            viewCount: channelInfo.views,
-            lastSyncTime: new Date().toISOString()
-          }, { merge: true });
-        } catch (dbErr: any) {
-          console.warn("Failed to persist synced channel stats to Firestore:", dbErr?.message || dbErr);
-        }
-      }
-
-      channelCache = { data: channelInfo, timestamp: Date.now() };
-      res.json(channelInfo);
+      res.json(freshChannel);
     } catch (err: any) {
-      console.error("Error in app.get(/api/youtube/channel):", err);
-      res.status(500).json({ error: err.message || "Internal server error" });
+      logYouTube("Proxy Status", `GET /api/youtube/channel failed: ${err.message}`);
+      res.status(500).json({ error: err.message || "Failed to load channel details" });
     }
   });
 
-
-  // 5. Fetch Videos Tab
+  // 8. Get Videos
   app.get("/api/youtube/videos", async (req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    logYouTube("Incoming Request", "GET /api/youtube/videos");
     try {
-      const config = await getYouTubeConfig();
-      if (!config || !config.enabled || !config.apiKey || !config.channelId) {
-        return res.status(400).json({ error: "YouTube Integration is disabled or not configured." });
+      const config = await getYouTubeConfigSecure();
+      if (!config.enabled || !config.apiKey || !config.channelId) {
+        return res.status(400).json({ error: "YouTube Integration is disabled or not configured in Admin panel." });
       }
-      const { videos } = await getVideosAndShortsCached(config);
-      res.json(videos);
+
+      const cacheExpiry = (config.cacheDurationMinutes || 15) * 60 * 1000;
+      if (ytChannelCache && ytVideosCache.length > 0 && (Date.now() - ytCacheTimestamp < cacheExpiry)) {
+        logYouTube("Proxy Status", "Serving YouTube Videos list from in-memory cache.");
+        return res.json(ytVideosCache);
+      }
+
+      logYouTube("Proxy Status", "Videos list cache missing or expired. Fetching fresh from Google API...");
+      let uploadsId = "";
+      if (ytChannelCache) {
+        uploadsId = ytChannelCache.uploadsPlaylistId;
+      } else {
+        const freshChannel = await fetchChannelDetails(config.apiKey, config.channelId);
+        ytChannelCache = freshChannel;
+        uploadsId = freshChannel.uploadsPlaylistId;
+      }
+
+      const { videos, shorts } = await fetchVideosAndShortsFromAPI(config.apiKey, uploadsId);
+      ytVideosCache = videos;
+      ytShortsCache = shorts;
+      ytCacheTimestamp = Date.now();
+
+      res.json(ytVideosCache);
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      logYouTube("Proxy Status", `GET /api/youtube/videos failed: ${err.message}`);
+      res.status(500).json({ error: err.message || "Failed to load videos" });
     }
   });
 
-
-  // 6. Fetch Shorts Tab
+  // 9. Get Shorts
   app.get("/api/youtube/shorts", async (req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    logYouTube("Incoming Request", "GET /api/youtube/shorts");
     try {
-      const config = await getYouTubeConfig();
-      if (!config || !config.enabled || !config.apiKey || !config.channelId) {
-        return res.status(400).json({ error: "YouTube Integration is disabled or not configured." });
+      const config = await getYouTubeConfigSecure();
+      if (!config.enabled || !config.apiKey || !config.channelId) {
+        return res.status(400).json({ error: "YouTube Integration is disabled or not configured in Admin panel." });
       }
-      const { shorts } = await getVideosAndShortsCached(config);
-      res.json(shorts);
+
+      const cacheExpiry = (config.cacheDurationMinutes || 15) * 60 * 1000;
+      if (ytChannelCache && ytShortsCache.length > 0 && (Date.now() - ytCacheTimestamp < cacheExpiry)) {
+        logYouTube("Proxy Status", "Serving YouTube Shorts list from in-memory cache.");
+        return res.json(ytShortsCache);
+      }
+
+      logYouTube("Proxy Status", "Shorts list cache missing or expired. Fetching fresh from Google API...");
+      let uploadsId = "";
+      if (ytChannelCache) {
+        uploadsId = ytChannelCache.uploadsPlaylistId;
+      } else {
+        const freshChannel = await fetchChannelDetails(config.apiKey, config.channelId);
+        ytChannelCache = freshChannel;
+        uploadsId = freshChannel.uploadsPlaylistId;
+      }
+
+      const { videos, shorts } = await fetchVideosAndShortsFromAPI(config.apiKey, uploadsId);
+      ytVideosCache = videos;
+      ytShortsCache = shorts;
+      ytCacheTimestamp = Date.now();
+
+      res.json(ytShortsCache);
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      logYouTube("Proxy Status", `GET /api/youtube/shorts failed: ${err.message}`);
+      res.status(500).json({ error: err.message || "Failed to load shorts clips" });
     }
   });
 
-
-  // 7. Fetch Live Stream Details
+  // 10. Get Live streaming status
   app.get("/api/youtube/live", async (req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    logYouTube("Incoming Request", "GET /api/youtube/live");
     try {
-      const config = await getYouTubeConfig();
-      if (!config || !config.enabled || !config.apiKey || !config.channelId) {
-        return res.status(400).json({ error: "YouTube Integration is disabled or not configured." });
+      const config = await getYouTubeConfigSecure();
+      if (!config.enabled || !config.apiKey || !config.channelId) {
+        return res.status(400).json({ error: "YouTube Integration is disabled or not configured in Admin panel." });
       }
 
-      // Live stream statuses expire in 5 minutes to stay accurate
-      if (liveCache && (Date.now() - liveCache.timestamp < 5 * 60 * 1000)) {
-        return res.json(liveCache.data);
+      // Live status expires in 5 minutes
+      if (ytLiveCache && (Date.now() - ytLiveCacheTimestamp < 5 * 60 * 1000)) {
+        logYouTube("Proxy Status", "Serving live broadcast status from in-memory cache.");
+        return res.json(ytLiveCache);
       }
 
-      const { apiKey, channelId } = config;
+      logYouTube("Proxy Status", "Live status cache missing or expired. Querying active event broadcasts...");
+      const liveData = await fetchLiveStatusFromAPI(config.apiKey, config.channelId);
+      ytLiveCache = liveData;
+      ytLiveCacheTimestamp = Date.now();
 
-      // Search active live streams
-      const liveSearchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channelId}&type=video&eventType=live&key=${apiKey}`;
-      const liveData = await fetchFromYouTube(liveSearchUrl);
-      const liveItems = liveData.items || [];
-
-      let activeLive: any = null;
-      if (liveItems.length > 0) {
-        const liveVideo = liveItems[0];
-        const liveVideoId = liveVideo.id.videoId;
-
-        // Fetch precise viewer count and metrics
-        const liveDetailsUrl = `https://www.googleapis.com/youtube/v3/videos?part=liveStreamingDetails,statistics&id=${liveVideoId}&key=${apiKey}`;
-        let viewerCount = 0;
-        try {
-          const details = await fetchFromYouTube(liveDetailsUrl);
-          const detailsItem = details.items?.[0];
-          viewerCount = parseInt(detailsItem?.liveStreamingDetails?.concurrentViewers, 10) || 0;
-        } catch (detailErr) {
-          console.error("An error occurred");
-        }
-
-        activeLive = {
-          id: liveVideoId,
-          title: liveVideo.snippet.title,
-          description: liveVideo.snippet.description,
-          thumbnail: liveVideo.snippet.thumbnails?.high?.url || liveVideo.snippet.thumbnails?.default?.url || "",
-          publishedAt: liveVideo.snippet.publishedAt,
-          viewerCount: viewerCount
-        };
-      }
-
-      // Search upcoming scheduled broadcasts
-      const upcomingSearchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channelId}&type=video&eventType=upcoming&key=${apiKey}`;
-      let upcomingStreams: any[] = [];
-      try {
-        const upcomingData = await fetchFromYouTube(upcomingSearchUrl);
-        upcomingStreams = (upcomingData.items || []).map((v: any) => ({
-          id: v.id.videoId,
-          title: v.snippet.title,
-          description: v.snippet.description,
-          thumbnail: v.snippet.thumbnails?.high?.url || v.snippet.thumbnails?.default?.url || "",
-          publishedAt: v.snippet.publishedAt
-        }));
-      } catch (upcomingErr) {
-        console.error("An error occurred");
-      }
-
-      const liveStatus = {
-        isLive: !!activeLive,
-        activeLive,
-        upcomingStreams
-      };
-
-      liveCache = { data: liveStatus, timestamp: Date.now() };
-      res.json(liveStatus);
+      res.json(liveData);
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      logYouTube("Proxy Status", `GET /api/youtube/live failed: ${err.message}`);
+      res.status(500).json({ error: err.message || "Failed to load live status details" });
     }
   });
   

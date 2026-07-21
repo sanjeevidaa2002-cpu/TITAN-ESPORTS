@@ -279,6 +279,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
 
   const loadYtAdminData = async () => {
     setLoadingYt(true);
+    setYtTestStatus(null);
     try {
       const configRes = await fetch('/api/youtube/config');
       if (configRes.ok) {
@@ -287,42 +288,53 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
           throw new Error("Invalid YouTube configuration format from server.");
         }
         const configData = await configRes.json();
+        const hasKey = configData.hasApiKey;
+        const channelId = configData.channelId || '';
+
         setYtConfig({
           enabled: configData.enabled || false,
-          apiKey: '', // Empty on load for security, preserve backend key unless typing a new one
-          channelId: configData.channelId || '',
+          apiKey: hasKey ? '••••••••' : '',
+          channelId: channelId,
           cacheDurationMinutes: configData.cacheDurationMinutes || 15,
           autoSync: configData.autoSync ?? true
         });
 
-        if (configData.enabled && configData.channelId) {
-          // Fetch channel info
-          const channelRes = await fetch('/api/youtube/channel');
-          if (channelRes.ok && (channelRes.headers.get("content-type") || "").includes("application/json")) {
-            try {
-              setYtChannelInfo(await channelRes.json());
-            } catch (_) {}
-          }
-          // Fetch live status
-          const liveRes = await fetch('/api/youtube/live');
-          if (liveRes.ok && (liveRes.headers.get("content-type") || "").includes("application/json")) {
-            try {
-              setYtLiveInfo(await liveRes.json());
-            } catch (_) {}
-          }
-          // Fetch videos & shorts
-          const videosRes = await fetch('/api/youtube/videos');
-          const shortsRes = await fetch('/api/youtube/shorts');
-          if (videosRes.ok && (videosRes.headers.get("content-type") || "").includes("application/json")) {
-            try {
-              setYtVideos(await videosRes.json());
-            } catch (_) {}
-          }
-          if (shortsRes.ok && (shortsRes.headers.get("content-type") || "").includes("application/json")) {
-            try {
-              setYtShorts(await shortsRes.json());
-            } catch (_) {}
-          }
+        // FIRST TIME SETUP: If credentials are not set, do not load any further channel statistics or make API requests
+        if (!hasKey || !channelId) {
+          setYtChannelInfo(null);
+          setYtLiveInfo(null);
+          setYtVideos([]);
+          setYtShorts([]);
+          return;
+        }
+
+        // Credentials exist, load full details
+        const channelRes = await fetch('/api/youtube/channel');
+        if (channelRes.ok && (channelRes.headers.get("content-type") || "").includes("application/json")) {
+          try {
+            setYtChannelInfo(await channelRes.json());
+          } catch (_) {}
+        }
+        
+        const liveRes = await fetch('/api/youtube/live');
+        if (liveRes.ok && (liveRes.headers.get("content-type") || "").includes("application/json")) {
+          try {
+            setYtLiveInfo(await liveRes.json());
+          } catch (_) {}
+        }
+        
+        const videosRes = await fetch('/api/youtube/videos');
+        if (videosRes.ok && (videosRes.headers.get("content-type") || "").includes("application/json")) {
+          try {
+            setYtVideos(await videosRes.json());
+          } catch (_) {}
+        }
+
+        const shortsRes = await fetch('/api/youtube/shorts');
+        if (shortsRes.ok && (shortsRes.headers.get("content-type") || "").includes("application/json")) {
+          try {
+            setYtShorts(await shortsRes.json());
+          } catch (_) {}
         }
       }
     } catch (err) {
@@ -337,6 +349,24 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     setLoadingYt(true);
     setYtTestStatus(null);
     try {
+      const apiKey = ytConfig.apiKey;
+      const channelId = ytConfig.channelId;
+
+      // Strictly validate both formats if they're customized
+      if (apiKey && apiKey !== '••••••••') {
+        if (!apiKey.trim().startsWith("AIzaSy")) {
+          throw new Error("Invalid API Key format: Key must start with 'AIzaSy'.");
+        }
+      }
+      if (channelId) {
+        if (!channelId.trim().startsWith("UC")) {
+          throw new Error("Invalid Channel ID format: Channel ID must start with 'UC'.");
+        }
+        if (channelId.trim().length !== 24) {
+          throw new Error(`Invalid Channel ID format: Channel ID must be exactly 24 characters (entered ${channelId.trim().length} chars).`);
+        }
+      }
+
       const res = await fetch('/api/youtube/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -353,7 +383,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
         alert(data.message || "YouTube configuration saved successfully!");
         loadYtAdminData();
       } else {
-        alert(data.error || "Failed to save configuration");
+        throw new Error(data.error || "Failed to save settings.");
       }
     } catch (err: any) {
       alert("Error: " + err.message);
@@ -366,52 +396,59 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     setLoadingYt(true);
     setYtTestStatus(null);
     try {
-      const saveRes = await fetch('/api/youtube/config', {
+      const apiKey = ytConfig.apiKey;
+      const channelId = ytConfig.channelId;
+
+      if (!apiKey || apiKey.trim() === '') {
+        throw new Error("API Key required: Please enter a YouTube API key to test connection.");
+      }
+      if (!channelId || channelId.trim() === '') {
+        throw new Error("Channel ID required: Please enter a YouTube Channel ID to test connection.");
+      }
+
+      const cleanKey = apiKey.trim();
+      const cleanChannel = channelId.trim();
+
+      if (cleanKey !== '••••••••' && !cleanKey.startsWith("AIzaSy")) {
+        throw new Error("Invalid API Key format: Key must start with 'AIzaSy'.");
+      }
+      if (!cleanChannel.startsWith("UC")) {
+        throw new Error("Invalid Channel ID format: Channel ID must start with 'UC'.");
+      }
+      if (cleanChannel.length !== 24) {
+        throw new Error(`Invalid Channel ID format: Channel ID must be exactly 24 characters (entered ${cleanChannel.length} chars).`);
+      }
+
+      const testRes = await fetch('/api/youtube/test-connection', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(ytConfig)
+        body: JSON.stringify({ apiKey: cleanKey, channelId: cleanChannel })
       });
-      
-      if (!saveRes.ok) {
-        let errMsg = "Failed to save credentials before testing connection";
-        const saveContentType = saveRes.headers.get("content-type") || "";
-        if (saveContentType.includes("application/json")) {
-          try {
-            const errData = await saveRes.json();
-            if (errData && (errData.error || errData.message)) {
-              errMsg = errData.error || errData.message;
-            }
-          } catch (_) {}
-        } else {
-          errMsg += ` (Status ${saveRes.status})`;
-        }
-        throw new Error(errMsg);
+
+      const contentType = testRes.headers.get("content-type") || "";
+      if (!contentType.includes("application/json")) {
+        throw new Error("Server returned an invalid non-JSON response. Please check if the backend is running properly.");
       }
 
-      // Force cache sync
-      await fetch('/api/youtube/sync', { method: 'POST' });
-
-      const channelRes = await fetch('/api/youtube/channel');
-      const channelContentType = channelRes.headers.get("content-type") || "";
-      
-      if (!channelContentType.includes("application/json")) {
-        throw new Error("Received an invalid response format from YouTube Channel API. Please ensure your API credentials are correct and the channel is active.");
-      }
-
-      const channelData = await channelRes.json();
-
-      if (channelRes.ok && channelData.id) {
+      const data = await testRes.json();
+      if (testRes.ok && data.success) {
         setYtTestStatus({
           success: true,
-          message: `Successfully connected to channel: ${channelData.title || 'Connected'}!`
+          message: data.message || "Successfully connected to YouTube channel!"
         });
-        setYtChannelInfo(channelData);
-        loadYtAdminData();
+        if (data.channel) {
+          setYtChannelInfo({
+            id: data.channel.id,
+            title: data.channel.title,
+            logo: data.channel.thumbnail,
+            subscribers: data.channel.subscriberCount,
+            views: data.channel.viewCount,
+            videosCount: data.channel.videoCount,
+            country: 'Global'
+          });
+        }
       } else {
-        setYtTestStatus({
-          success: false,
-          message: channelData.error || "Channel not found or invalid YouTube API credentials."
-        });
+        throw new Error(data.error || "Google API connection test failed.");
       }
     } catch (err: any) {
       setYtTestStatus({
@@ -423,22 +460,115 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     }
   };
 
-  const handleYtManualSync = async () => {
+  const handleConnectYt = async () => {
     setLoadingYt(true);
+    setYtTestStatus(null);
+    try {
+      const apiKey = ytConfig.apiKey;
+      const channelId = ytConfig.channelId;
+
+      if (!apiKey || apiKey === '••••••••' || apiKey.trim() === '') {
+        throw new Error("API Key required: Please enter your YouTube Data API v3 Key.");
+      }
+      if (!channelId || channelId.trim() === '') {
+        throw new Error("Channel ID required: Please enter your YouTube Channel ID.");
+      }
+
+      const cleanKey = apiKey.trim();
+      const cleanChannel = channelId.trim();
+
+      if (!cleanKey.startsWith("AIzaSy")) {
+        throw new Error("Invalid API Key format: Key must start with 'AIzaSy'.");
+      }
+      if (!cleanChannel.startsWith("UC")) {
+        throw new Error("Invalid Channel ID format: Channel ID must start with 'UC'.");
+      }
+      if (cleanChannel.length !== 24) {
+        throw new Error(`Invalid Channel ID format: Channel ID must be exactly 24 characters (entered ${cleanChannel.length} chars).`);
+      }
+
+      const connectRes = await fetch('/api/youtube/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey: cleanKey, channelId: cleanChannel })
+      });
+
+      const contentType = connectRes.headers.get("content-type") || "";
+      if (!contentType.includes("application/json")) {
+        throw new Error("Server returned an invalid non-JSON response. Please check if the backend is running properly.");
+      }
+
+      const data = await connectRes.json();
+      if (connectRes.ok && data.success) {
+        setYtTestStatus({ success: true, message: data.message });
+        alert(data.message || "YouTube Channel connected successfully!");
+        loadYtAdminData();
+      } else {
+        throw new Error(data.error || "Failed to connect YouTube Channel.");
+      }
+    } catch (err: any) {
+      setYtTestStatus({ success: false, message: err.message });
+      alert("Connection Error: " + err.message);
+    } finally {
+      setLoadingYt(false);
+    }
+  };
+
+  const handleDisconnectYt = async () => {
+    if (!window.confirm("Are you sure you want to disconnect this YouTube Channel? This will clear all local cache, statistics, and disable integration.")) {
+      return;
+    }
+    setLoadingYt(true);
+    setYtTestStatus(null);
+    try {
+      const disconnectRes = await fetch('/api/youtube/disconnect', { method: 'POST' });
+      const contentType = disconnectRes.headers.get("content-type") || "";
+      
+      if (!contentType.includes("application/json")) {
+        throw new Error("Server returned an invalid response format (non-JSON).");
+      }
+
+      const data = await disconnectRes.json();
+      if (disconnectRes.ok) {
+        alert(data.message || "YouTube integration disconnected.");
+        setYtConfig({
+          enabled: false,
+          apiKey: '',
+          channelId: '',
+          cacheDurationMinutes: 15,
+          autoSync: true
+        });
+        setYtChannelInfo(null);
+        setYtLiveInfo(null);
+        setYtVideos([]);
+        setYtShorts([]);
+      } else {
+        throw new Error(data.error || "Disconnection failed.");
+      }
+    } catch (err: any) {
+      alert("Error: " + err.message);
+    } finally {
+      setLoadingYt(false);
+    }
+  };
+
+  const handleRefreshYtData = async () => {
+    setLoadingYt(true);
+    setYtTestStatus(null);
     try {
       const syncRes = await fetch('/api/youtube/sync', { method: 'POST' });
-      const syncContentType = syncRes.headers.get("content-type") || "";
+      const contentType = syncRes.headers.get("content-type") || "";
       
-      if (!syncContentType.includes("application/json")) {
+      if (!contentType.includes("application/json")) {
         throw new Error("Server returned an invalid response format (non-JSON).");
       }
 
       const syncData = await syncRes.json();
       if (syncRes.ok) {
-        alert(syncData.message || "Cache invalidated and cleared!");
+        alert(syncData.message || "YouTube channel statistics and archives synchronized successfully!");
         loadYtAdminData();
       } else {
-        alert(syncData.error || "Sync failed");
+        throw new Error(syncData.error || "Synchronization failed.");
       }
     } catch (err: any) {
       alert("Error: " + err.message);
@@ -4685,24 +4815,24 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
               <div>
                 <h2 className="text-xl font-black text-white uppercase tracking-wider flex items-center gap-2">
                   <Youtube className="w-6 h-6 text-red-500 fill-red-500/10" />
-                  YouTube Sync & Broadcast Manager
+                  YouTube Integration
                 </h2>
-                <p className="text-xs text-neutral-400 font-sans">Configure secure API proxy layers, monitor active live streams, and refresh caching metrics.</p>
+                <p className="text-xs text-neutral-400 font-sans">Connect your YouTube Channel to pull videos, shorts, and active live streams into your gaming portal.</p>
               </div>
 
               <div className="flex items-center gap-2">
                 <button 
-                  onClick={handleYtManualSync}
+                  onClick={handleRefreshYtData}
                   className="px-4 py-2 bg-gradient-to-r from-gold-500 to-amber-600 hover:brightness-110 text-neutral-950 font-black text-[10px] tracking-widest uppercase rounded-xl transition-all cursor-pointer shadow-lg"
                 >
-                  Sync API Cache Now
+                  Refresh Channel Data
                 </button>
               </div>
             </div>
 
             {loadingYt && (
               <div className="p-4 bg-gold-500/5 border border-gold-500/20 text-gold-400 rounded-xl text-center font-mono text-xs animate-pulse">
-                🔄 Processing and refreshing YouTube metrics from Google cloud server proxy...
+                🔄 Accessing secure YouTube proxy layer to retrieve latest stream and video metrics...
               </div>
             )}
 
@@ -4715,10 +4845,27 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                 {/* A. API CONFIGURATION CARD */}
                 <div className="bg-[#101017] border border-white/5 rounded-2xl p-5 space-y-4">
                   <h3 className="text-xs font-black text-white uppercase tracking-widest border-b border-white/5 pb-2">
-                    1. API CONFIGURATION
+                    YouTube Integration Settings
                   </h3>
 
-                  <form onSubmit={handleSaveYtConfig} className="space-y-4 text-xs font-sans">
+                  {/* FIRST TIME SETUP OR CONFIGURATION STATUS BAR */}
+                  {(!ytConfig.channelId || !ytConfig.apiKey || ytConfig.apiKey === '') ? (
+                    <div className="p-3.5 bg-amber-500/5 border border-amber-500/20 text-amber-400 rounded-xl text-xs space-y-1">
+                      <p className="font-extrabold uppercase tracking-wider text-[10px] flex items-center gap-1.5 text-amber-300">
+                        <AlertTriangle className="w-3.5 h-3.5" /> First-Time Setup Required
+                      </p>
+                      <p className="font-sans leading-normal text-[10.5px]">Please enter both your YouTube Data API v3 Key and Channel ID below. Until configured, YouTube integration remains disabled.</p>
+                    </div>
+                  ) : (
+                    <div className="p-3.5 bg-green-500/5 border border-green-500/10 text-green-400 rounded-xl text-xs space-y-1">
+                      <p className="font-extrabold uppercase tracking-wider text-[10px] flex items-center gap-1.5 text-green-300">
+                        <CheckCircle className="w-3.5 h-3.5" /> Channel Integration Active
+                      </p>
+                      <p className="font-sans leading-normal text-[10.5px]">Your channel is currently linked. YouTube videos and live metrics are synced on a secure server cache layer.</p>
+                    </div>
+                  )}
+
+                  <div className="space-y-4 text-xs font-sans">
                     {/* Enable Toggle */}
                     <div className="flex items-center justify-between p-3 bg-white/5 rounded-xl border border-white/5">
                       <div>
@@ -4740,23 +4887,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                         type="password"
                         value={ytConfig.apiKey}
                         onChange={(e) => setYtConfig({ ...ytConfig, apiKey: e.target.value })}
-                        placeholder="••••••••••••••••••••••••••••••••"
+                        placeholder="e.g. AIzaSy..."
                         className="w-full bg-neutral-900 border border-white/10 rounded-xl p-2.5 text-xs text-white font-mono placeholder-neutral-600 focus:outline-none focus:border-gold-500/30"
                       />
-                      <span className="text-[8px] text-neutral-500 font-mono block">Leave blank to retain previously stored secure API key.</span>
+                      <span className="text-[8px] text-neutral-500 font-mono block">Must be a valid Google Cloud API key starting with 'AIzaSy'.</span>
                     </div>
 
                     {/* Channel ID */}
                     <div className="space-y-1">
-                      <label className="text-[9px] font-bold text-neutral-400 uppercase tracking-wide block">Channel ID</label>
+                      <label className="text-[9px] font-bold text-neutral-400 uppercase tracking-wide block">YouTube Channel ID</label>
                       <input 
                         type="text"
                         value={ytConfig.channelId}
                         onChange={(e) => setYtConfig({ ...ytConfig, channelId: e.target.value })}
-                        placeholder="e.g. UC_x5XG1OV2P6uYZ5_XGPw"
-                        required
+                        placeholder="e.g. UCjqzz1wYC3zdpLEHVxjcTEQ"
                         className="w-full bg-neutral-900 border border-white/10 rounded-xl p-2.5 text-xs text-white font-mono placeholder-neutral-600 focus:outline-none focus:border-gold-500/30"
                       />
+                      <span className="text-[8px] text-neutral-500 font-mono block">Must start with 'UC' and be exactly 24 characters long.</span>
                     </div>
 
                     {/* Cache Duration & Auto Sync */}
@@ -4784,22 +4931,51 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                       </div>
                     </div>
 
-                    <div className="flex gap-2.5 pt-2">
+                    {/* ACTIONS BAR CONTAINER */}
+                    <div className="space-y-2 pt-2 border-t border-white/5">
+                      <div className="grid grid-cols-2 gap-2">
+                        <button 
+                          type="button"
+                          onClick={handleConnectYt}
+                          className="py-2.5 bg-gradient-to-r from-gold-500 to-amber-600 hover:brightness-110 text-neutral-950 font-black uppercase text-[9px] tracking-widest rounded-xl transition-all cursor-pointer shadow-md"
+                        >
+                          Connect Channel
+                        </button>
+                        <button 
+                          type="button"
+                          onClick={handleTestYtConnection}
+                          className="py-2.5 bg-neutral-900 hover:bg-neutral-800 border border-white/5 text-neutral-300 font-extrabold uppercase text-[9px] tracking-wider rounded-xl transition-all cursor-pointer"
+                        >
+                          Test Connection
+                        </button>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <button 
+                          type="button"
+                          onClick={(e) => handleSaveYtConfig(e)}
+                          className="py-2 bg-neutral-900 hover:bg-neutral-800 border border-white/5 text-neutral-300 font-extrabold uppercase text-[9px] tracking-wider rounded-xl transition-all cursor-pointer"
+                        >
+                          Save Settings
+                        </button>
+                        <button 
+                          type="button"
+                          onClick={handleRefreshYtData}
+                          className="py-2 bg-neutral-900 hover:bg-neutral-800 border border-white/5 text-neutral-300 font-extrabold uppercase text-[9px] tracking-wider rounded-xl transition-all cursor-pointer"
+                        >
+                          Refresh Channel Data
+                        </button>
+                      </div>
+
                       <button 
                         type="button"
-                        onClick={handleTestYtConnection}
-                        className="flex-1 py-2.5 bg-neutral-900 hover:bg-neutral-800 border border-white/5 text-neutral-300 font-extrabold uppercase text-[9px] tracking-wider rounded-xl transition-all cursor-pointer"
+                        onClick={handleDisconnectYt}
+                        className="w-full py-2 bg-red-950/20 hover:bg-red-950/40 border border-red-500/25 text-red-400 font-extrabold uppercase text-[9px] tracking-widest rounded-xl transition-all cursor-pointer mt-1"
                       >
-                        Verify & Test Connection
-                      </button>
-                      <button 
-                        type="submit"
-                        className="flex-1 py-2.5 bg-gradient-to-r from-gold-500 to-amber-600 hover:brightness-110 text-neutral-950 font-black uppercase text-[9px] tracking-widest rounded-xl transition-all cursor-pointer shadow-md"
-                      >
-                        Save Configuration
+                        Disconnect Channel
                       </button>
                     </div>
-                  </form>
+                  </div>
 
                   {/* Verification Response Display */}
                   {ytTestStatus && (
@@ -4814,7 +4990,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                 {/* B. CACHE AND METRICS PANEL */}
                 <div className="bg-[#101017] border border-white/5 rounded-2xl p-5 space-y-3">
                   <h3 className="text-xs font-black text-white uppercase tracking-widest border-b border-white/5 pb-2">
-                    2. LIVE CHANNEL METRICS
+                    Live Channel Metrics
                   </h3>
                   
                   {ytChannelInfo ? (
@@ -4824,41 +5000,42 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                           src={ytChannelInfo.logo} 
                           alt={ytChannelInfo.title} 
                           className="w-11 h-11 rounded-lg border border-white/10 object-cover"
+                          referrerPolicy="no-referrer"
                         />
                         <div>
                           <p className="font-black text-white uppercase tracking-wide">{ytChannelInfo.title}</p>
-                          <p className="text-[10px] text-neutral-400 font-mono">@{ytChannelInfo.title.toLowerCase().replace(/\s/g, '')}</p>
+                          <p className="text-[10px] text-neutral-400 font-mono">Channel Linked Successfully</p>
                         </div>
                       </div>
 
                       <div className="grid grid-cols-2 gap-2 font-mono text-[10px]">
                         <div className="bg-[#0c0c11] p-2 rounded-lg border border-white/5">
                           <span className="text-neutral-500 uppercase block text-[8px] font-semibold">Subscribers</span>
-                          <span className="text-white font-black">{(ytChannelInfo.subscribers).toLocaleString()}</span>
+                          <span className="text-white font-black">{ytChannelInfo.subscribers ? Number(ytChannelInfo.subscribers).toLocaleString() : '0'}</span>
                         </div>
                         <div className="bg-[#0c0c11] p-2 rounded-lg border border-white/5">
                           <span className="text-neutral-500 uppercase block text-[8px] font-semibold">Total Views</span>
-                          <span className="text-white font-black">{(ytChannelInfo.views).toLocaleString()}</span>
+                          <span className="text-white font-black">{ytChannelInfo.views ? Number(ytChannelInfo.views).toLocaleString() : '0'}</span>
                         </div>
                         <div className="bg-[#0c0c11] p-2 rounded-lg border border-white/5">
                           <span className="text-neutral-500 uppercase block text-[8px] font-semibold">Videos Uploaded</span>
-                          <span className="text-white font-black">{ytChannelInfo.videosCount}</span>
+                          <span className="text-white font-black">{ytChannelInfo.videosCount || '0'}</span>
                         </div>
                         <div className="bg-[#0c0c11] p-2 rounded-lg border border-white/5">
                           <span className="text-neutral-500 uppercase block text-[8px] font-semibold">Country</span>
-                          <span className="text-gold-400 font-black uppercase">{ytChannelInfo.country}</span>
+                          <span className="text-gold-400 font-black uppercase">{ytChannelInfo.country || 'Global'}</span>
                         </div>
                       </div>
                     </div>
                   ) : (
-                    <p className="text-[10px] text-neutral-500 font-mono">Please verify the connection above to retrieve live subscriber counters.</p>
+                    <p className="text-[10px] text-neutral-500 font-mono">Please enter credentials and click Connect to link your channel.</p>
                   )}
                 </div>
 
                 {/* C. LIVE STREAM TELEMETRY CHECKER */}
                 <div className="bg-[#101017] border border-white/5 rounded-2xl p-5 space-y-4">
                   <h3 className="text-xs font-black text-white uppercase tracking-widest border-b border-white/5 pb-2 flex items-center justify-between">
-                    <span>3. LIVE STREAM TELEMETRY</span>
+                    <span>Live Stream Telemetry</span>
                     {ytLiveInfo?.isLive ? (
                       <span className="px-1.5 py-0.5 rounded bg-red-600 text-white font-black text-[8px] tracking-widest uppercase animate-bounce">LIVE</span>
                     ) : (
@@ -4873,6 +5050,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                           src={ytLiveInfo.activeLive.thumbnail} 
                           alt="Thumbnail" 
                           className="w-full h-full object-cover"
+                          referrerPolicy="no-referrer"
                         />
                         <div className="absolute inset-0 bg-gradient-to-t from-black to-transparent p-3 flex flex-col justify-end">
                           <span className="text-[10px] text-red-400 font-mono font-black uppercase flex items-center gap-1">
@@ -4899,7 +5077,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                 {/* D. VIDEO ARCHIVE CONTROLS */}
                 <div className="bg-[#101017] border border-white/5 rounded-2xl p-5 space-y-4">
                   <h3 className="text-xs font-black text-white uppercase tracking-widest border-b border-white/5 pb-2">
-                    4. DOCK SYNCED ARCHIVES
+                    Dock Synced Archives
                   </h3>
 
                   {/* Videos Table */}
@@ -4911,7 +5089,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
 
                     <div className="divide-y divide-white/5 max-h-96 overflow-y-auto pr-1">
                       {ytVideos.length === 0 ? (
-                        <p className="p-8 text-center text-neutral-500 font-mono text-[10px]">No synchronized videos detected. Verify settings and trigger "Sync API Cache Now".</p>
+                        <p className="p-8 text-center text-neutral-500 font-mono text-[10px]">No synchronized videos detected. Verify settings and trigger "Refresh Channel Data".</p>
                       ) : (
                         ytVideos.map((vid, idx) => (
                           <div key={vid.id} className="py-3 flex gap-3 items-center hover:bg-white/5 px-2 rounded-xl transition-all">
@@ -4919,11 +5097,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                               src={vid.thumbnail} 
                               alt="thumb" 
                               className="w-16 aspect-video rounded object-cover bg-neutral-800 border border-white/5"
+                              referrerPolicy="no-referrer"
                             />
                             <div className="min-w-0 flex-1">
                               <p className="font-extrabold text-neutral-200 text-xs truncate uppercase tracking-wide">{vid.title}</p>
                               <div className="flex items-center gap-3 text-[9px] font-mono text-neutral-500 mt-1">
-                                <span className="text-gold-400">{(vid.views).toLocaleString()} views</span>
+                                <span className="text-gold-400">{vid.views ? Number(vid.views).toLocaleString() : '0'} views</span>
                                 <span>•</span>
                                 <span>Published: {new Date(vid.publishedAt).toLocaleDateString()}</span>
                               </div>
@@ -4952,11 +5131,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                               src={short.thumbnail} 
                               alt="thumb" 
                               className="w-10 aspect-[9/16] rounded object-cover bg-neutral-800 border border-white/5"
+                              referrerPolicy="no-referrer"
                             />
                             <div className="min-w-0 flex-1">
                               <p className="font-extrabold text-neutral-200 text-[11px] truncate uppercase tracking-wide leading-tight">{short.title}</p>
                               <div className="flex items-center gap-3 text-[9px] font-mono text-neutral-500 mt-0.5">
-                                <span className="text-red-400 font-black">{(short.views).toLocaleString()} views</span>
+                                <span className="text-red-400 font-black">{short.views ? Number(short.views).toLocaleString() : '0'} views</span>
                               </div>
                             </div>
                             <span className="text-[8px] font-mono bg-red-500/5 px-2 py-0.5 rounded text-red-400 shrink-0 uppercase tracking-widest">SHORT</span>

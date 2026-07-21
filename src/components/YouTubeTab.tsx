@@ -407,6 +407,7 @@ export const YouTubeTab: React.FC = () => {
                 src={channel.logo} 
                 alt={channel.title} 
                 className="w-20 h-20 rounded-2xl border-4 border-[#0f0f15] bg-neutral-800 object-cover shadow-xl shrink-0"
+                referrerPolicy="no-referrer"
               />
 
               <div className="flex-1 space-y-1">
@@ -571,6 +572,7 @@ export const YouTubeTab: React.FC = () => {
                           alt={video.title} 
                           className="w-full h-full object-cover group-hover:scale-105 transition-all duration-300"
                           loading="lazy"
+                          referrerPolicy="no-referrer"
                         />
                         {/* Semi-transparent dark overlay */}
                         <div className="absolute inset-0 bg-black/10 group-hover:bg-black/30 transition-all flex items-center justify-center">
@@ -658,6 +660,7 @@ export const YouTubeTab: React.FC = () => {
                           alt={short.title} 
                           className="w-full h-full object-cover group-hover:scale-105 transition-all duration-300"
                           loading="lazy"
+                          referrerPolicy="no-referrer"
                         />
                         <div className="absolute inset-0 bg-gradient-to-t from-black via-black/20 to-black/35 flex flex-col justify-between p-3.5">
                           {/* Top Red Shorts Badge */}
@@ -776,6 +779,7 @@ export const YouTubeTab: React.FC = () => {
                       alt={stream.title} 
                       className="w-24 aspect-video rounded-lg object-cover shrink-0 bg-neutral-800"
                       loading="lazy"
+                      referrerPolicy="no-referrer"
                     />
                     <div className="flex-1 flex flex-col justify-between py-1">
                       <div>
