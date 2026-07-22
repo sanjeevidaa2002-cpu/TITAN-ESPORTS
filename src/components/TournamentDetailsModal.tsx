@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
+import { CountdownTimer } from './CountdownTimer';
 import { Tournament } from '../types';
 import { useGame } from '../context/GameContext';
 import { 
@@ -364,6 +365,16 @@ const matchStarted = tournament.roomStatus === 'live' || tournament.roomStatus =
                   <p className="text-sm font-black font-mono text-amber-500">₹{tournament.perKillPrize}</p>
                 </div>
               </div>
+
+              {/* Tournament Real-Time Countdown Timer */}
+              <CountdownTimer 
+                targetDate={tournament.dateTime} 
+                matchDate={tournament.matchDate} 
+                matchTime={tournament.matchTime} 
+                timeZone={tournament.timeZone} 
+                status={tournament.roomStatus} 
+                matchRoomStatus={tournament.matchRoomStatus} 
+              />
 
               {/* Prize Pool Distribution Breakdown Table */}
               <div className="space-y-3">

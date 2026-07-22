@@ -1,5 +1,6 @@
 import {
-  Bell, LogOut } from "lucide-react";
+  Bell, LogOut, Calendar, Clock } from "lucide-react";
+import { calculateTargetIsoDate } from './CountdownTimer';
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -558,6 +559,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     dateTime: string;
     matchDate: string;
     matchTime: string;
+    timeZone: string;
     registrationStart: string;
     registrationEnd: string;
     roomStatus: RoomStatusType;
@@ -588,6 +590,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     dateTime: '',
     matchDate: '',
     matchTime: '',
+    timeZone: 'IST (UTC+05:30)',
     registrationStart: '',
     registrationEnd: '',
     roomStatus: 'open',
@@ -1213,6 +1216,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       dateTime: t.dateTime,
       matchDate: t.matchDate || '',
       matchTime: t.matchTime || '',
+      timeZone: t.timeZone || 'IST (UTC+05:30)',
       registrationStart: t.registrationStart || '',
       registrationEnd: t.registrationEnd || '',
       roomStatus: t.roomStatus,
@@ -1279,6 +1283,41 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     }
   };
 
+  const saveScheduleCountdown = async () => {
+    if (!matchForm.matchDate) {
+      alert("Please select a valid Tournament Date.");
+      return;
+    }
+    const calculatedIso = calculateTargetIsoDate(matchForm.matchDate, matchForm.matchTime, matchForm.timeZone || 'IST (UTC+05:30)');
+    setMatchForm(prev => ({
+      ...prev,
+      dateTime: calculatedIso
+    }));
+
+    if (isEditingMatch && isEditingMatch !== 'new') {
+      try {
+        const existing = tournaments.find(t => t.id === isEditingMatch);
+        if (existing) {
+          await saveTournamentAdmin({
+            ...existing,
+            matchDate: matchForm.matchDate,
+            matchTime: matchForm.matchTime,
+            timeZone: matchForm.timeZone || 'IST (UTC+05:30)',
+            dateTime: calculatedIso,
+            lastUpdated: new Date().toISOString(),
+            updatedBy: 'Admin'
+          });
+          addAuditLog(`Updated schedule & countdown for tournament ${matchForm.id}`);
+          alert("Tournament Schedule & Countdown Saved Successfully!");
+        }
+      } catch (err: any) {
+        alert("Error saving countdown schedule: " + err.message);
+      }
+    } else {
+      alert("Schedule set! Click 'Save Tournament Match' below to publish.");
+    }
+  };
+
   const saveMatchForm = async () => {
     try {
       const isFree = matchForm.tournamentType === 'free';
@@ -1286,9 +1325,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       const finalIsFreeMatch = isFree ? true : matchForm.isFreeMatch;
 
       const legacyGameCategory = matchForm.gameName === 'PUBG Mobile' ? 'pubg_mobile' : matchForm.gameName === 'Hacker Match' ? 'hacker_match' : matchForm.gameName === 'Free Match' ? 'free_match' : 'free_fire';
+      const calculatedIso = calculateTargetIsoDate(matchForm.matchDate, matchForm.matchTime, matchForm.timeZone || 'IST (UTC+05:30)');
 
       const matchData: Tournament = {
         ...matchForm,
+        dateTime: calculatedIso || matchForm.dateTime,
         entryFee: finalEntryFee,
         isFreeMatch: finalIsFreeMatch,
         id: matchForm.id,
@@ -1296,7 +1337,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
         matchCategory: matchForm.category,
         mode: matchForm.matchType,
         lastUpdated: new Date().toISOString(),
-          updatedBy: 'Admin',
+        updatedBy: 'Admin',
         rules: matchForm.rules,
         joinedSlots: isEditingMatch === 'new' ? [] : (tournaments.find(t => t.id === isEditingMatch)?.joinedSlots || []),
         joinedNicknames: isEditingMatch === 'new' ? {} : (tournaments.find(t => t.id === isEditingMatch)?.joinedNicknames || {}),
@@ -1306,7 +1347,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       await saveTournamentAdmin(matchData);
       addAuditLog(`${isEditingMatch === 'new' ? 'Created' : 'Updated'} match ${matchForm.title} (${matchForm.id})`);
       setIsEditingMatch(null);
-      alert("Tournament Thumbnail Saved Successfully.");
+      alert("Tournament Saved Successfully.");
     } catch (err: any) {
       alert("Error saving match: " + err.message);
     }
@@ -3007,25 +3048,67 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                     />
                   </div>
 
-                  {/* Row 3 */}
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-neutral-400 uppercase tracking-wide">Match Date</label>
-                    <input 
-                      type="date"
-                      value={matchForm.matchDate}
-                      onChange={e => setMatchForm({...matchForm, matchDate: e.target.value})}
-                      className="w-full bg-neutral-900 border border-white/10 rounded-xl p-2.5 text-xs text-white font-mono"
-                    />
+                  {/* Tournament Schedule Section */}
+                  <div className="col-span-full bg-[#111219] border border-gold-500/20 rounded-2xl p-4 space-y-3">
+                    <div className="flex items-center justify-between border-b border-white/5 pb-2">
+                      <div className="flex items-center gap-2">
+                        <Calendar className="w-4 h-4 text-gold-400" />
+                        <span className="text-xs font-black text-white uppercase tracking-wider">Tournament Schedule</span>
+                      </div>
+                      <span className="text-[9px] text-neutral-400 font-mono">Real-Time Countdown Configuration</span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-neutral-400 uppercase tracking-wide">Tournament Date</label>
+                        <input 
+                          type="date"
+                          value={matchForm.matchDate}
+                          onChange={e => setMatchForm({...matchForm, matchDate: e.target.value})}
+                          className="w-full bg-neutral-900 border border-white/10 rounded-xl p-2.5 text-xs text-white font-mono"
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-neutral-400 uppercase tracking-wide">Tournament Time</label>
+                        <input 
+                          type="time"
+                          value={matchForm.matchTime}
+                          onChange={e => setMatchForm({...matchForm, matchTime: e.target.value})}
+                          className="w-full bg-neutral-900 border border-white/10 rounded-xl p-2.5 text-xs text-white font-mono"
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-neutral-400 uppercase tracking-wide">Time Zone</label>
+                        <select 
+                          value={matchForm.timeZone || 'IST (UTC+05:30)'}
+                          onChange={e => setMatchForm({...matchForm, timeZone: e.target.value})}
+                          className="w-full bg-neutral-900 border border-white/10 rounded-xl p-2.5 text-xs text-white font-mono"
+                        >
+                          <option value="IST (UTC+05:30)">IST (UTC+05:30) - India</option>
+                          <option value="UTC (GMT+00:00)">UTC (GMT+00:00) - Universal</option>
+                          <option value="EST (UTC-05:00)">EST (UTC-05:00) - Eastern US</option>
+                          <option value="PST (UTC-08:00)">PST (UTC-08:00) - Pacific US</option>
+                          <option value="CST (UTC-06:00)">CST (UTC-06:00) - Central US</option>
+                          <option value="GST (UTC+04:00)">GST (UTC+04:00) - Gulf Standard Time</option>
+                          <option value="SGT (UTC+08:00)">SGT (UTC+08:00) - Singapore Time</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="flex justify-end pt-1">
+                      <button 
+                        type="button"
+                        onClick={saveScheduleCountdown}
+                        className="px-4 py-2 bg-gradient-to-r from-gold-500 to-amber-500 hover:brightness-110 text-neutral-950 font-black text-xs rounded-xl uppercase tracking-wider flex items-center gap-1.5 shadow-md active:scale-95 transition-all cursor-pointer"
+                      >
+                        <Clock className="w-3.5 h-3.5" />
+                        <span>Save Countdown</span>
+                      </button>
+                    </div>
                   </div>
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-neutral-400 uppercase tracking-wide">Match Time</label>
-                    <input 
-                      type="time"
-                      value={matchForm.matchTime}
-                      onChange={e => setMatchForm({...matchForm, matchTime: e.target.value})}
-                      className="w-full bg-neutral-900 border border-white/10 rounded-xl p-2.5 text-xs text-white font-mono"
-                    />
-                  </div>
+
                   <div className="space-y-1">
                     <label className="text-[10px] font-bold text-neutral-400 uppercase tracking-wide">Registration Start</label>
                     <input 

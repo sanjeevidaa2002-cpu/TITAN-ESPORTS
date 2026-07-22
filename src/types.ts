@@ -86,6 +86,7 @@ export interface Tournament {
   registrationEnd?: string;
   matchDate?: string;
   matchTime?: string;
+  timeZone?: string;
   status?: string;
   createdAt?: string | number;
   updatedAt?: string | number;

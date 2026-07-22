@@ -362,6 +362,14 @@ async function startServer() {
     }
   }
 
+  // Server Time Endpoint for Countdown Timer Synchronization
+  app.get("/api/server-time", (req, res) => {
+    return helperResponseJson(res, 200, {
+      serverTime: Date.now(),
+      iso: new Date().toISOString()
+    });
+  });
+
   // 1. YouTube API Endpoints
   app.get("/api/youtube/channel", async (req, res) => {
     try {

@@ -310,7 +310,7 @@ export const MatchesTab: React.FC<MatchesTabProps> = ({
                               🟡 Coming Soon
                             </span>
                           </div>
-                          <CountdownTimer targetDate={reg.dateTime} status="coming_soon" />
+                          <CountdownTimer targetDate={reg.dateTime} matchDate={reg.matchDate} matchTime={reg.matchTime} timeZone={reg.timeZone} status="coming_soon" />
                         </>
                       );
                     })()}
@@ -637,6 +637,16 @@ export const MatchesTab: React.FC<MatchesTabProps> = ({
                       <p className="text-xs font-black font-mono text-amber-500 mt-1">₹{t.perKillPrize}</p>
                     </div>
                   </div>
+
+                  {/* Real-Time Live Tournament Countdown Timer */}
+                  <CountdownTimer 
+                    targetDate={t.dateTime} 
+                    matchDate={t.matchDate} 
+                    matchTime={t.matchTime} 
+                    timeZone={t.timeZone} 
+                    status={t.roomStatus} 
+                    matchRoomStatus={t.matchRoomStatus} 
+                  />
 
                   {/* Joined Slots Progress Bar (not needed for completed matches) */}
                   {t.roomStatus !== 'completed' ? (
