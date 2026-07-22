@@ -123,6 +123,10 @@ export interface Transaction {
   paymentMethod: 'UPI' | 'Razorpay' | 'Paytm' | 'PhonePe' | 'GPay' | 'System';
   upiId?: string; // For withdraw or manual deposits
   referenceNo?: string; // UPI Ref / Transaction ID
+  utr?: string; // UTR Number / UPI Transaction Reference Number
+  paymentStatus?: string; // SUCCESS, FAILED, PENDING, DUPLICATE_REJECTED
+  verificationStatus?: 'verified' | 'failed' | 'pending' | 'duplicate_rejected';
+  gateway?: string;
   dateTime: string;
   status: 'pending' | 'completed' | 'failed' | 'cancelled' | 'pending_verification';
   description: string;

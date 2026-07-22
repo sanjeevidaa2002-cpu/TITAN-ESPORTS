@@ -1013,13 +1013,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       const nickname = userObj?.nickname?.toLowerCase() || '';
       const email = userObj?.email?.toLowerCase() || '';
       const txId = txn.id?.toLowerCase() || '';
-      const refNo = txn.referenceNo?.toLowerCase() || '';
-      const method = txn.paymentMethod?.toLowerCase() || '';
+      const refNo = (txn.referenceNo || '').toLowerCase();
+      const utrStr = (txn.utr || '').toLowerCase();
+      const method = (txn.paymentMethod || txn.gateway || '').toLowerCase();
       return (
         nickname.includes(q) ||
         email.includes(q) ||
         txId.includes(q) ||
         refNo.includes(q) ||
+        utrStr.includes(q) ||
         method.includes(q)
       );
     }
@@ -4053,40 +4055,55 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                       <tr>
                         <th className="p-2.5 pl-3">TXN Identifier</th>
                         <th className="p-2.5">User</th>
-                        <th className="p-2.5">Action Flow Type</th>
                         <th className="p-2.5">Amount</th>
-                        <th className="p-2.5">Gateway / Ref / UTR</th>
-                        <th className="p-2.5">Status</th>
+                        <th className="p-2.5">Gateway / UTR / Ref</th>
+                        <th className="p-2.5">Verification</th>
+                        <th className="p-2.5">Payment Status</th>
+                        <th className="p-2.5">Date & Time</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-white/2 font-mono">
                       {filteredTransactions.map((txn) => {
                         const userObj = dbUsers.find(u => u.uid === txn.userId);
+                        const utrVal = txn.utr || txn.referenceNo;
+                        const verStatus = txn.verificationStatus || (txn.status === 'completed' ? 'verified' : (txn.status === 'failed' ? 'failed' : 'pending'));
+                        const payStatus = txn.paymentStatus || (txn.status === 'completed' ? 'SUCCESS' : txn.status.toUpperCase());
+                        const dateStr = txn.dateTime ? new Date(txn.dateTime).toLocaleString() : '-';
                         return (
                           <tr key={txn.id} className="hover:bg-white/2 text-[11px] text-neutral-300">
-                            <td className="p-2.5 pl-3 text-neutral-500">{txn.id}</td>
+                            <td className="p-2.5 pl-3 text-neutral-500 font-mono">{txn.id}</td>
                             <td className="p-2.5 font-sans font-bold text-white">
                               <div>
                                 <p>{userObj?.nickname || 'Unknown'}</p>
-                                <p className="text-[9px] text-neutral-500 font-mono">{userObj?.email}</p>
+                                <p className="text-[9px] text-neutral-500 font-mono">{userObj?.email || txn.userId}</p>
                               </div>
                             </td>
-                            <td className="p-2.5 uppercase text-[10px]">{txn.type.replace('_', ' ')}</td>
-                            <td className="p-2.5 font-bold text-white">₹{txn.amount}</td>
+                            <td className="p-2.5 font-black text-emerald-400">₹{txn.amount}</td>
                             <td className="p-2.5 text-[10px] text-neutral-400">
-                              <span className="font-sans font-bold bg-white/5 px-1.5 py-0.5 rounded text-neutral-300 uppercase mr-1">{txn.paymentMethod}</span>
-                              {txn.referenceNo ? <span className="font-mono text-gold-400 select-all">{txn.referenceNo}</span> : <span className="text-neutral-600">-</span>}
+                              <span className="font-sans font-bold bg-white/5 px-1.5 py-0.5 rounded text-neutral-300 uppercase mr-1">{txn.paymentMethod || txn.gateway || 'UPI'}</span>
+                              {utrVal ? <span className="font-mono text-gold-400 font-bold select-all">{utrVal}</span> : <span className="text-neutral-600">-</span>}
                             </td>
                             <td className="p-2.5">
                               <span className={`px-2 py-0.5 rounded text-[9px] uppercase font-bold ${
-                                txn.status === 'completed' ? 'bg-green-500/10 text-green-400 border border-green-500/10' :
-                                txn.status === 'pending' ? 'bg-amber-500/10 text-amber-400 border border-amber-500/10' :
-                                txn.status === 'failed' ? 'bg-red-500/10 text-red-400 border border-red-500/10' :
-                                'bg-neutral-800 text-neutral-500'
+                                verStatus === 'verified' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' :
+                                verStatus === 'duplicate_rejected' ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20' :
+                                verStatus === 'failed' ? 'bg-red-500/10 text-red-400 border border-red-500/20' :
+                                'bg-amber-500/10 text-amber-400 border border-amber-500/20'
                               }`}>
-                                {txn.status === 'completed' ? 'Success' : txn.status}
+                                {verStatus}
                               </span>
                             </td>
+                            <td className="p-2.5">
+                              <span className={`px-2 py-0.5 rounded text-[9px] uppercase font-bold ${
+                                payStatus === 'SUCCESS' || payStatus === 'COMPLETED' ? 'bg-green-500/10 text-green-400 border border-green-500/20' :
+                                payStatus === 'DUPLICATE_REJECTED' ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20' :
+                                payStatus === 'FAILED' ? 'bg-red-500/10 text-red-400 border border-red-500/20' :
+                                'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                              }`}>
+                                {payStatus}
+                              </span>
+                            </td>
+                            <td className="p-2.5 text-[10px] text-neutral-400 font-sans">{dateStr}</td>
                           </tr>
                         );
                       })}

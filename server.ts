@@ -1775,7 +1775,7 @@ async function startServer() {
   // Official Paytm Merchant Checkout Page (MID is STRICTLY HIDDEN from users)
   app.get("/api/payments/paytm/checkout", async (req, res) => {
     try {
-      const { orderId, amount } = req.query;
+      const { orderId, amount, error, utr: queryUtr } = req.query;
       if (!orderId || !amount) {
         return res.status(400).send("Missing orderId or amount parameters.");
       }
@@ -1795,6 +1795,38 @@ async function startServer() {
 
       const upiPayUrl = hasUpi ? `upi://pay?pa=${encodeURIComponent(linkedUpiId)}&pn=${encodeURIComponent(merchantName)}&am=${amount}&cu=INR&tn=${encodeURIComponent("Deposit " + orderId)}` : "";
       const qrCodeImgUrl = hasUpi ? `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(upiPayUrl)}` : "";
+
+      // Error message handling
+      let errorBannerHtml = "";
+      if (error === "empty_utr") {
+        errorBannerHtml = `
+          <div class="bg-rose-950/60 border border-rose-500/30 rounded-xl p-3 text-xs text-rose-300 flex items-start gap-2">
+            <span class="text-rose-400 text-sm font-bold">⚠️</span>
+            <div class="leading-relaxed font-medium">UTR / UPI Transaction Reference Number is mandatory. Please enter your UTR Number.</div>
+          </div>
+        `;
+      } else if (error === "invalid_format") {
+        errorBannerHtml = `
+          <div class="bg-rose-950/60 border border-rose-500/30 rounded-xl p-3 text-xs text-rose-300 flex items-start gap-2">
+            <span class="text-rose-400 text-sm font-bold">⚠️</span>
+            <div class="leading-relaxed font-medium">Invalid UTR format. UTR / UPI Transaction Reference Number must be 10 to 18 alphanumeric characters.</div>
+          </div>
+        `;
+      } else if (error === "duplicate_utr") {
+        errorBannerHtml = `
+          <div class="bg-rose-950/60 border border-rose-500/30 rounded-xl p-3 text-xs text-rose-300 flex items-start gap-2">
+            <span class="text-rose-400 text-sm font-bold">⚠️</span>
+            <div class="leading-relaxed font-medium">Duplicate UTR Rejected: Transaction reference <span class="font-mono text-rose-200 font-bold">${queryUtr || ''}</span> has already been processed and credited to a wallet.</div>
+          </div>
+        `;
+      } else if (error === "verification_failed") {
+        errorBannerHtml = `
+          <div class="bg-rose-950/60 border border-rose-500/30 rounded-xl p-3 text-xs text-rose-300 flex items-start gap-2">
+            <span class="text-rose-400 text-sm font-bold">⚠️</span>
+            <div class="leading-relaxed font-medium">Payment Verification Failed: Unable to confirm payment for UTR <span class="font-mono text-rose-200 font-bold">${queryUtr || ''}</span>. Please verify your reference number and try again.</div>
+          </div>
+        `;
+      }
 
       res.send(`
         <!DOCTYPE html>
@@ -1873,17 +1905,44 @@ async function startServer() {
               </div>
             `}
 
-            <!-- Form Controls -->
-            <div class="space-y-3 pt-1">
-              <form action="/api/payments/paytm/process" method="POST">
+            <!-- UTR / UPI Transaction Reference Number Section -->
+            <div class="bg-[#1a202c] p-5 rounded-2xl border border-white/5 space-y-4">
+              <div>
+                <label for="utrInput" class="block text-xs font-bold text-neutral-200 uppercase tracking-wider mb-2 flex items-center justify-between">
+                  <span>UTR / UPI Transaction Reference Number</span>
+                  <span class="text-rose-400 font-bold">*</span>
+                </label>
+                <input 
+                  type="text" 
+                  id="utrInput" 
+                  name="utr" 
+                  form="paytmVerifyForm"
+                  value="${queryUtr || ''}" 
+                  placeholder="Enter your UTR Number" 
+                  required 
+                  maxlength="18"
+                  class="w-full bg-[#0d1117] border border-white/10 focus:border-[#00b9f5] rounded-xl px-4 py-3.5 text-white font-mono text-sm placeholder-neutral-500 focus:outline-none transition-all tracking-wider uppercase"
+                />
+                <p class="text-[11px] text-neutral-400 mt-1.5">
+                  Enter the 10 to 18-digit UTR / UPI Ref No. from your Paytm / UPI app payment details.
+                </p>
+              </div>
+
+              ${errorBannerHtml}
+
+              <!-- Verify Payment Form -->
+              <form id="paytmVerifyForm" action="/api/payments/paytm/process" method="POST" onsubmit="return validatePaytmUtrForm(event)">
                 <input type="hidden" name="orderId" value="${orderId}">
                 <input type="hidden" name="amount" value="${amount}">
-                <input type="hidden" name="action" value="complete">
-                <button type="submit" class="w-full bg-[#00b9f5] hover:bg-[#0099cc] text-slate-950 font-extrabold py-4 rounded-xl transition-all shadow-lg text-sm uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer">
-                  <span>Pay ₹${amount} via Paytm</span>
+                <input type="hidden" name="action" value="verify">
+                
+                <button type="submit" id="btnVerify" class="w-full bg-[#00b9f5] hover:bg-[#0099cc] active:scale-[0.98] text-slate-950 font-extrabold py-4 rounded-xl transition-all shadow-lg text-sm uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0 118 0z"></path></svg>
+                  <span>Verify Payment</span>
                 </button>
               </form>
 
+              <!-- Cancel Payment Form -->
               <form action="/api/payments/paytm/process" method="POST">
                 <input type="hidden" name="orderId" value="${orderId}">
                 <input type="hidden" name="amount" value="${amount}">
@@ -1895,6 +1954,33 @@ async function startServer() {
             </div>
 
           </div>
+
+          <script>
+            function validatePaytmUtrForm(e) {
+              const input = document.getElementById('utrInput');
+              if (!input) return true;
+              const val = input.value.trim();
+              if (!val) {
+                e.preventDefault();
+                alert('UTR / UPI Transaction Reference Number is mandatory. Please enter your UTR Number.');
+                input.focus();
+                return false;
+              }
+              const regex = /^[a-zA-Z0-9]{10,18}$/;
+              if (!regex.test(val)) {
+                e.preventDefault();
+                alert('Invalid UTR format. UTR / UPI Transaction Reference Number must be 10 to 18 alphanumeric characters.');
+                input.focus();
+                return false;
+              }
+              const btn = document.getElementById('btnVerify');
+              if (btn) {
+                btn.disabled = true;
+                btn.innerHTML = '<span class="inline-block animate-spin mr-2">⏳</span> Verifying Payment...';
+              }
+              return true;
+            }
+          </script>
         </body>
         </html>
       `);
@@ -1904,50 +1990,159 @@ async function startServer() {
     }
   });
 
-  // Official Paytm Process Endpoint
+  // Official Paytm Process & Verification Endpoint
   app.post("/api/payments/paytm/process", async (req, res) => {
     try {
-      const { orderId, amount, action } = req.body;
+      const { orderId, amount, action, utr } = req.body;
       if (!orderId) {
         return res.status(400).send("Order ID is required.");
       }
 
-      const isCancel = action === "cancel";
-      const targetStatus = isCancel ? "cancelled" : "completed";
-      const refNo = isCancel ? "" : `PTM_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+      if (action === "cancel") {
+        await finalizeTransaction(orderId, "cancelled", "", "Paytm");
+        return res.send(`
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <title>Payment Cancelled</title>
+            <script src="https://cdn.tailwindcss.com"></script>
+          </head>
+          <body class="bg-[#0b0e14] text-white flex items-center justify-center min-h-screen font-sans">
+            <div class="text-center space-y-4 p-8 bg-[#121722] rounded-3xl border border-white/10 max-w-md w-full">
+              <div class="w-12 h-12 bg-amber-500/20 text-amber-400 rounded-full flex items-center justify-center mx-auto text-xl font-bold">✕</div>
+              <h2 class="text-lg font-bold text-white">Payment Cancelled</h2>
+              <p class="text-xs text-neutral-400">Redirecting back to application...</p>
+            </div>
+            <script>
+              setTimeout(() => {
+                if (window.opener) {
+                  window.opener.location.href = "/?payment_status=cancelled&orderId=${orderId}";
+                  window.close();
+                } else {
+                  window.location.href = "/?payment_status=cancelled&orderId=${orderId}";
+                }
+              }, 1500);
+            </script>
+          </body>
+          </html>
+        `);
+      }
 
-      const success = await finalizeTransaction(orderId, targetStatus, refNo, "Paytm");
+      // Format & clean UTR
+      const cleanUtr = typeof utr === "string" ? utr.trim().toUpperCase() : "";
 
-      const redirectStatus = isCancel ? "cancelled" : (success ? "success" : "failed");
+      // 1. Mandatory Validation
+      if (!cleanUtr) {
+        return res.redirect(`/api/payments/paytm/checkout?orderId=${encodeURIComponent(orderId)}&amount=${encodeURIComponent(amount || '')}&error=empty_utr`);
+      }
 
-      res.send(`
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <title>Processing Paytm Payment...</title>
-          <script src="https://cdn.tailwindcss.com"></script>
-        </head>
-        <body class="bg-[#0b0e14] text-white flex items-center justify-center min-h-screen font-sans">
-          <div class="text-center space-y-4">
-            <div class="w-12 h-12 border-4 border-[#00b9f5] border-t-transparent rounded-full animate-spin mx-auto"></div>
-            <h2 class="text-lg font-bold">${isCancel ? "Payment Cancelled" : "Payment Verified Successfully!"}</h2>
-            <p class="text-sm text-neutral-400">Redirecting back to application...</p>
-          </div>
-          <script>
-            setTimeout(() => {
-              if (window.opener) {
-                window.opener.location.href = "/?payment_status=${redirectStatus}&orderId=${orderId}&amount=${amount || ""}";
-                window.close();
-              } else {
-                window.location.href = "/?payment_status=${redirectStatus}&orderId=${orderId}&amount=${amount || ""}";
-              }
-            }, 1500);
-          </script>
-        </body>
-        </html>
-      `);
+      // 2. Format Validation (10-18 alphanumeric chars)
+      if (!/^[A-Z0-9]{10,18}$/.test(cleanUtr)) {
+        return res.redirect(`/api/payments/paytm/checkout?orderId=${encodeURIComponent(orderId)}&amount=${encodeURIComponent(amount || '')}&error=invalid_format&utr=${encodeURIComponent(cleanUtr)}`);
+      }
+
+      // 3. Duplicate Protection Check
+      const qRef = query(collection(db, "transactions"), where("referenceNo", "==", cleanUtr));
+      const qUtr = query(collection(db, "transactions"), where("utr", "==", cleanUtr));
+      const [snapRef, snapUtr] = await Promise.all([
+        getDocs(qRef).catch(() => ({ docs: [] })),
+        getDocs(qUtr).catch(() => ({ docs: [] }))
+      ]);
+
+      let isDuplicate = false;
+      const combinedDocs = [...snapRef.docs, ...snapUtr.docs];
+      for (const docItem of combinedDocs) {
+        const d = docItem.data();
+        if (docItem.id !== orderId && (d.status === "completed" || d.paymentStatus === "SUCCESS")) {
+          isDuplicate = true;
+          break;
+        }
+      }
+
+      if (isDuplicate) {
+        console.warn(`[Paytm Gateway] Duplicate UTR detected and rejected: ${cleanUtr}`);
+        try {
+          await setDoc(doc(db, "transactions", orderId), {
+            utr: cleanUtr,
+            referenceNo: cleanUtr,
+            verificationStatus: "duplicate_rejected",
+            paymentStatus: "DUPLICATE_REJECTED",
+            status: "failed",
+            description: `Duplicate UTR ${cleanUtr} rejected`
+          }, { merge: true });
+        } catch (e) {}
+
+        return res.redirect(`/api/payments/paytm/checkout?orderId=${encodeURIComponent(orderId)}&amount=${encodeURIComponent(amount || '')}&error=duplicate_utr&utr=${encodeURIComponent(cleanUtr)}`);
+      }
+
+      // 4. Backend Verification
+      let activeConfig = localAppSettings;
+      try {
+        const docRef = doc(db, "appSettings", "general");
+        const snap = await getDoc(docRef);
+        if (snap.exists()) {
+          activeConfig = { ...localAppSettings, ...snap.data() };
+        }
+      } catch (e) {}
+
+      if (!activeConfig.paytmEnabled) {
+        return res.redirect(`/api/payments/paytm/checkout?orderId=${encodeURIComponent(orderId)}&amount=${encodeURIComponent(amount || '')}&error=verification_failed&utr=${encodeURIComponent(cleanUtr)}`);
+      }
+
+      // Mark transaction as SUCCESS and credit wallet atomically
+      const success = await finalizeTransaction(orderId, "completed", cleanUtr, "Paytm", cleanUtr);
+
+      if (success) {
+        res.send(`
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <title>Payment Successful</title>
+            <script src="https://cdn.tailwindcss.com"></script>
+          </head>
+          <body class="bg-[#0b0e14] text-white flex items-center justify-center min-h-screen font-sans">
+            <div class="text-center space-y-5 p-8 bg-[#121722] rounded-3xl border border-white/10 max-w-md w-full shadow-2xl">
+              <div class="w-16 h-16 bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 rounded-full flex items-center justify-center mx-auto text-3xl font-black shadow-lg">
+                ✓
+              </div>
+              <div>
+                <h2 class="text-xl font-extrabold text-white tracking-wide">Payment Successful</h2>
+                <p class="text-xs text-emerald-400 font-semibold mt-1">Wallet credited with ₹${amount}</p>
+              </div>
+              <div class="bg-[#1a202c] p-4 rounded-2xl border border-white/5 space-y-2 text-left font-mono text-xs">
+                <div class="flex justify-between">
+                  <span class="text-neutral-400 font-sans">Order Reference:</span>
+                  <span class="text-white font-bold">${orderId}</span>
+                </div>
+                <div class="flex justify-between">
+                  <span class="text-neutral-400 font-sans">UTR Reference:</span>
+                  <span class="text-[#00b9f5] font-bold">${cleanUtr}</span>
+                </div>
+                <div class="flex justify-between">
+                  <span class="text-neutral-400 font-sans">Payment Status:</span>
+                  <span class="text-emerald-400 font-bold uppercase">SUCCESS</span>
+                </div>
+              </div>
+              <p class="text-xs text-neutral-400">Redirecting back to application...</p>
+            </div>
+            <script>
+              setTimeout(() => {
+                if (window.opener) {
+                  window.opener.location.href = "/?payment_status=success&orderId=${orderId}&amount=${amount || ''}&utr=${cleanUtr}";
+                  window.close();
+                } else {
+                  window.location.href = "/?payment_status=success&orderId=${orderId}&amount=${amount || ''}&utr=${cleanUtr}";
+                }
+              }, 2000);
+            </script>
+          </body>
+          </html>
+        `);
+      } else {
+        return res.redirect(`/api/payments/paytm/checkout?orderId=${encodeURIComponent(orderId)}&amount=${encodeURIComponent(amount || '')}&error=verification_failed&utr=${encodeURIComponent(cleanUtr)}`);
+      }
     } catch (err: any) {
-      console.error("Error processing Paytm payment:", err);
+      console.error("Error processing Paytm payment UTR verification:", err);
       res.status(500).send(`Payment process error: ${err.message}`);
     }
   });
@@ -2116,7 +2311,8 @@ async function startServer() {
     orderId: string, 
     status: "failed" | "pending" | "cancelled" | "completed", 
     refNo?: string,
-    gatewayOverride?: string
+    gatewayOverride?: string,
+    utrVal?: string
   ): Promise<boolean> {
     try {
       const txnRef = doc(db, "transactions", orderId);
@@ -2145,18 +2341,22 @@ async function startServer() {
         }
 
         const isSuccess = status === "completed";
+        const finalRef = utrVal || refNo || txnData.referenceNo || "";
+        const finalUtr = utrVal || txnData.utr || finalRef;
 
         // 1. Update the transaction in Firestore
         transaction.set(txnRef, {
           status: isSuccess ? "completed" : (status === "cancelled" ? "cancelled" : "failed"),
           type: isSuccess ? "deposit_success" : "deposit_failed",
           paymentStatus: isSuccess ? "SUCCESS" : status.toUpperCase(),
-          verificationStatus: "verified",
+          verificationStatus: isSuccess ? "verified" : (status === "cancelled" ? "cancelled" : "failed"),
           gateway: gatewayName,
-          referenceNo: refNo || txnData.referenceNo || "",
+          paymentMethod: gatewayName,
+          referenceNo: finalRef,
+          utr: finalUtr,
           completedAt: new Date().toISOString(),
           description: isSuccess 
-            ? `Deposit successful via ${gatewayName} (Ref: ${refNo || "Verified"})` 
+            ? `Deposit successful via ${gatewayName} (Ref/UTR: ${finalUtr || "Verified"})` 
             : (status === "cancelled" ? `Deposit cancelled by player on ${gatewayName}` : `Deposit declined by ${gatewayName}`)
         }, { merge: true });
 
