@@ -1789,6 +1789,14 @@ async function startServer() {
         }
       } catch (e) {}
 
+      let txnUserId = "";
+      try {
+        const txnSnap = await getDoc(doc(db, "transactions", String(orderId)));
+        if (txnSnap.exists()) {
+          txnUserId = txnSnap.data().userId || "";
+        }
+      } catch (e) {}
+
       const merchantName = activeConfig.paytmMerchantDetails?.merchantName || "Official Paytm Merchant";
       const linkedUpiId = (activeConfig.paytmUpiId || activeConfig.paytmMerchantDetails?.merchantUpiId || "").trim();
       const hasUpi = linkedUpiId.length > 0;
@@ -1934,6 +1942,7 @@ async function startServer() {
               <form id="paytmVerifyForm" action="/api/payments/paytm/process" method="POST" onsubmit="return validatePaytmUtrForm(event)">
                 <input type="hidden" name="orderId" value="${orderId}">
                 <input type="hidden" name="amount" value="${amount}">
+                <input type="hidden" name="userId" value="${txnUserId}">
                 <input type="hidden" name="action" value="verify">
                 
                 <button type="submit" id="btnVerify" class="w-full bg-[#00b9f5] hover:bg-[#0099cc] active:scale-[0.98] text-slate-950 font-extrabold py-4 rounded-xl transition-all shadow-lg text-sm uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer">
@@ -1993,7 +2002,7 @@ async function startServer() {
   // Official Paytm Process & Verification Endpoint
   app.post("/api/payments/paytm/process", async (req, res) => {
     try {
-      const { orderId, amount, action, utr } = req.body;
+      const { orderId, amount, action, utr, userId } = req.body;
       if (!orderId) {
         return res.status(400).send("Order ID is required.");
       }
@@ -2085,12 +2094,12 @@ async function startServer() {
         }
       } catch (e) {}
 
-      if (!activeConfig.paytmEnabled) {
+      if (activeConfig.paytmEnabled === false) {
         return res.redirect(`/api/payments/paytm/checkout?orderId=${encodeURIComponent(orderId)}&amount=${encodeURIComponent(amount || '')}&error=verification_failed&utr=${encodeURIComponent(cleanUtr)}`);
       }
 
       // Mark transaction as SUCCESS and credit wallet atomically
-      const success = await finalizeTransaction(orderId, "completed", cleanUtr, "Paytm", cleanUtr);
+      const success = await finalizeTransaction(orderId, "completed", cleanUtr, "Paytm", cleanUtr, userId, Number(amount));
 
       if (success) {
         res.send(`
@@ -2312,53 +2321,77 @@ async function startServer() {
     status: "failed" | "pending" | "cancelled" | "completed", 
     refNo?: string,
     gatewayOverride?: string,
-    utrVal?: string
+    utrVal?: string,
+    fallbackUserId?: string,
+    fallbackAmount?: number
   ): Promise<boolean> {
     try {
       const txnRef = doc(db, "transactions", orderId);
       let alreadyCompleted = false;
-      let targetUserId = "";
-      let amountNum = 0;
+      let targetUserId = fallbackUserId || "";
+      let amountNum = fallbackAmount || 0;
       let gatewayName = gatewayOverride || "ZapUPI";
 
       await runTransaction(db, async (transaction) => {
         const txnSnap = await transaction.get(txnRef);
-        if (!txnSnap.exists()) {
-          console.warn(`Transaction ${orderId} not found in database during finalization.`);
-          return;
-        }
-        
-        const txnData = txnSnap.data();
-        targetUserId = txnData.userId;
-        amountNum = Number(txnData.amount || 0);
-        if (!gatewayOverride && (txnData.gateway || txnData.paymentMethod)) {
-          gatewayName = txnData.gateway || txnData.paymentMethod;
-        }
-
-        if (txnData.status === "completed") {
-          alreadyCompleted = true;
-          return;
-        }
-
         const isSuccess = status === "completed";
-        const finalRef = utrVal || refNo || txnData.referenceNo || "";
-        const finalUtr = utrVal || txnData.utr || finalRef;
+        const finalRef = utrVal || refNo || "";
+        const finalUtr = utrVal || finalRef;
 
-        // 1. Update the transaction in Firestore
-        transaction.set(txnRef, {
-          status: isSuccess ? "completed" : (status === "cancelled" ? "cancelled" : "failed"),
-          type: isSuccess ? "deposit_success" : "deposit_failed",
-          paymentStatus: isSuccess ? "SUCCESS" : status.toUpperCase(),
-          verificationStatus: isSuccess ? "verified" : (status === "cancelled" ? "cancelled" : "failed"),
-          gateway: gatewayName,
-          paymentMethod: gatewayName,
-          referenceNo: finalRef,
-          utr: finalUtr,
-          completedAt: new Date().toISOString(),
-          description: isSuccess 
-            ? `Deposit successful via ${gatewayName} (Ref/UTR: ${finalUtr || "Verified"})` 
-            : (status === "cancelled" ? `Deposit cancelled by player on ${gatewayName}` : `Deposit declined by ${gatewayName}`)
-        }, { merge: true });
+        if (!txnSnap.exists()) {
+          if (!targetUserId) {
+            console.warn(`Transaction ${orderId} not found in database and no fallbackUserId provided during finalization.`);
+            return;
+          }
+
+          console.log(`[${gatewayName}] Creating missing transaction doc ${orderId} for user ${targetUserId}`);
+          transaction.set(txnRef, {
+            id: orderId,
+            orderId: orderId,
+            userId: targetUserId,
+            amount: amountNum,
+            type: isSuccess ? "deposit_success" : "deposit_failed",
+            paymentMethod: gatewayName,
+            gateway: gatewayName,
+            dateTime: new Date().toISOString(),
+            status: isSuccess ? "completed" : (status === "cancelled" ? "cancelled" : "failed"),
+            paymentStatus: isSuccess ? "SUCCESS" : status.toUpperCase(),
+            verificationStatus: isSuccess ? "verified" : (status === "cancelled" ? "cancelled" : "failed"),
+            referenceNo: finalRef,
+            utr: finalUtr,
+            completedAt: new Date().toISOString(),
+            description: isSuccess 
+              ? `Deposit successful via ${gatewayName} (Ref/UTR: ${finalUtr || "Verified"})` 
+              : (status === "cancelled" ? `Deposit cancelled by player on ${gatewayName}` : `Deposit declined by ${gatewayName}`)
+          });
+        } else {
+          const txnData = txnSnap.data();
+          targetUserId = txnData.userId || targetUserId;
+          amountNum = Number(txnData.amount || amountNum);
+          if (!gatewayOverride && (txnData.gateway || txnData.paymentMethod)) {
+            gatewayName = txnData.gateway || txnData.paymentMethod;
+          }
+
+          if (txnData.status === "completed") {
+            alreadyCompleted = true;
+            return;
+          }
+
+          transaction.set(txnRef, {
+            status: isSuccess ? "completed" : (status === "cancelled" ? "cancelled" : "failed"),
+            type: isSuccess ? "deposit_success" : "deposit_failed",
+            paymentStatus: isSuccess ? "SUCCESS" : status.toUpperCase(),
+            verificationStatus: isSuccess ? "verified" : (status === "cancelled" ? "cancelled" : "failed"),
+            gateway: gatewayName,
+            paymentMethod: gatewayName,
+            referenceNo: finalRef || txnData.referenceNo || "",
+            utr: finalUtr || txnData.utr || "",
+            completedAt: new Date().toISOString(),
+            description: isSuccess 
+              ? `Deposit successful via ${gatewayName} (Ref/UTR: ${finalUtr || txnData.utr || "Verified"})` 
+              : (status === "cancelled" ? `Deposit cancelled by player on ${gatewayName}` : `Deposit declined by ${gatewayName}`)
+          }, { merge: true });
+        }
 
         if (isSuccess && targetUserId) {
           // 2. Atomically increment the user's deposit balance
@@ -2378,6 +2411,11 @@ async function startServer() {
           }
         }
       });
+
+      if (!targetUserId) {
+        console.error(`finalizeTransaction failed for ${orderId}: unable to determine targetUserId.`);
+        return false;
+      }
 
       if (alreadyCompleted) {
         console.log(`Transaction ${orderId} was already completed. Skipping duplicate notification/credit.`);
