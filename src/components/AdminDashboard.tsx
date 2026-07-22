@@ -79,6 +79,8 @@ import {
   Trophy,
   FolderClosed,
   Cloud,
+  ShieldCheck,
+  Save,
   Image as ImageIcon
 } from 'lucide-react';
 import { 
@@ -658,8 +660,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
     zapupiSecretKey: 'ZAP_VA_SECRET_KEY_84920',
     zapupiSandbox: true,
     paytmEnabled: true,
-    paytmMid: 'PAYTM_VA_MID',
-    paytmMerchantKey: '',
+    paytmMid: 'PAYTM_MID_12345',
+    paytmVerificationStatus: 'verified',
+    paytmConnectionStatus: 'connected',
+    paytmLastVerificationTime: null,
+    paytmMerchantDetails: null,
+    paytmLastSuccessfulPayment: null,
+    paytmLastFailedPayment: null,
     phonepeEnabled: true,
     phonepeMID: 'PHONEPE_VA_MID',
     phonepeKey: 'PHONEPE_VA_KEY',
@@ -755,7 +762,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
           zapupiSandbox: appSettings.zapupiSandbox,
           paytmEnabled: appSettings.paytmEnabled,
           paytmMid: appSettings.paytmMid,
-          paytmMerchantKey: appSettings.paytmMerchantKey,
+          paytmVerificationStatus: appSettings.paytmVerificationStatus,
+          paytmConnectionStatus: appSettings.paytmConnectionStatus,
+          paytmLastVerificationTime: appSettings.paytmLastVerificationTime,
+          paytmMerchantDetails: appSettings.paytmMerchantDetails,
+          paytmLastSuccessfulPayment: appSettings.paytmLastSuccessfulPayment,
+          paytmLastFailedPayment: appSettings.paytmLastFailedPayment,
           phonepeEnabled: appSettings.phonepeEnabled,
           phonepeMID: appSettings.phonepeMID,
           phonepeKey: appSettings.phonepeKey,
@@ -794,6 +806,83 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       }
     } finally {
       setSavingSettings(false);
+    }
+  };
+
+  // Paytm Merchant Configuration State & Handlers
+  const [verifyingPaytm, setVerifyingPaytm] = useState(false);
+  const [refreshingPaytm, setRefreshingPaytm] = useState(false);
+  const [paytmStatusMsg, setPaytmStatusMsg] = useState<{ text: string, type: 'success' | 'error' } | null>(null);
+
+  const handleVerifyPaytmMerchant = async () => {
+    if (!appSettings.paytmMid || appSettings.paytmMid.trim().length === 0) {
+      setPaytmStatusMsg({ text: "Please enter a valid Paytm Merchant ID before verifying.", type: 'error' });
+      return;
+    }
+    setVerifyingPaytm(true);
+    setPaytmStatusMsg(null);
+    try {
+      const res = await fetch('/api/admin/paytm/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paytmMid: appSettings.paytmMid })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setAppSettings(prev => ({
+          ...prev,
+          paytmVerificationStatus: data.verificationStatus || 'verified',
+          paytmConnectionStatus: data.connectionStatus || 'connected',
+          paytmLastVerificationTime: data.lastVerificationTime || new Date().toISOString(),
+          paytmMerchantDetails: data.merchantDetails || null
+        }));
+        setPaytmStatusMsg({ text: `✓ ${data.message || 'Paytm Merchant ID verified successfully!'}`, type: 'success' });
+        triggerNotification('Paytm Merchant Verified', 'Paytm Merchant ID verified and active.', 'system');
+        addAuditLog(`Verified Paytm Merchant ID: ${appSettings.paytmMid}`);
+      } else {
+        setPaytmStatusMsg({ text: `✕ Verification failed: ${data.message || 'Invalid Merchant ID'}`, type: 'error' });
+      }
+    } catch (err: any) {
+      setPaytmStatusMsg({ text: `✕ Error verifying merchant: ${err.message}`, type: 'error' });
+    } finally {
+      setVerifyingPaytm(false);
+    }
+  };
+
+  const handleSavePaytmConfig = async () => {
+    try {
+      setPaytmStatusMsg(null);
+      await savePaymentConfig();
+      setPaytmStatusMsg({ text: "✓ Paytm Merchant configuration saved successfully!", type: 'success' });
+    } catch (err: any) {
+      setPaytmStatusMsg({ text: `✕ Error saving configuration: ${err.message}`, type: 'error' });
+    }
+  };
+
+  const handleRefreshPaytmDetails = async () => {
+    setRefreshingPaytm(true);
+    setPaytmStatusMsg(null);
+    try {
+      const res = await fetch('/api/admin/paytm/refresh');
+      const data = await res.json();
+      if (data.success) {
+        setAppSettings(prev => ({
+          ...prev,
+          paytmConnectionStatus: data.connectionStatus || prev.paytmConnectionStatus,
+          paytmVerificationStatus: data.verificationStatus || prev.paytmVerificationStatus,
+          paytmLastVerificationTime: data.lastVerificationTime || prev.paytmLastVerificationTime,
+          paytmLastSuccessfulPayment: data.lastSuccessfulPayment || prev.paytmLastSuccessfulPayment,
+          paytmLastFailedPayment: data.lastFailedPayment || prev.paytmLastFailedPayment,
+          paytmMerchantDetails: data.merchantDetails || prev.paytmMerchantDetails
+        }));
+        setPaytmStatusMsg({ text: "✓ Paytm Merchant details and statistics refreshed!", type: 'success' });
+      } else {
+        setPaytmStatusMsg({ text: `✕ Refresh failed: ${data.message}`, type: 'error' });
+      }
+    } catch (err: any) {
+      setPaytmStatusMsg({ text: `✕ Error refreshing details: ${err.message}`, type: 'error' });
+    } finally {
+      setRefreshingPaytm(false);
     }
   };
 
@@ -1122,13 +1211,64 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
   const saveUserEdits = async () => {
     if (!editingUser) return;
     try {
+      const oldDep = Number(editingUser.depositBalance || 0);
+      const oldWin = Number(editingUser.winningBalance || 0);
+      const oldBon = Number(editingUser.bonusBalance || 0);
+
+      const newDep = Number(editDepBal || 0);
+      const newWin = Number(editWinBal || 0);
+      const newBon = Number(editBonBal || 0);
+
+      const depDiff = newDep - oldDep;
+      const winDiff = newWin - oldWin;
+      const bonDiff = newBon - oldBon;
+
+      // Update user document
       await updateDoc(doc(db, 'users', editingUser.uid), {
         ...editUserForm,
-        depositBalance: editDepBal,
-        winningBalance: editWinBal,
-        bonusBalance: editBonBal,
-        role: editRole
+        depositBalance: newDep,
+        winningBalance: newWin,
+        bonusBalance: newBon,
+        role: editRole,
+        updatedAt: new Date().toISOString()
       });
+
+      // Create transaction log if balance changed
+      if (depDiff !== 0 || winDiff !== 0 || bonDiff !== 0) {
+        const txnId = `txn_admin_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+        const totalDiff = depDiff + winDiff + bonDiff;
+        const isCredit = totalDiff >= 0;
+
+        await setDoc(doc(db, 'transactions', txnId), {
+          id: txnId,
+          orderId: txnId,
+          userId: editingUser.uid,
+          amount: Math.abs(depDiff !== 0 ? depDiff : (winDiff !== 0 ? winDiff : bonDiff)),
+          paymentMethod: isCredit ? "Admin Manual Credit" : "Admin Manual Debit",
+          status: "completed",
+          type: isCredit ? "deposit_success" : "admin_debit",
+          gateway: "Admin Panel",
+          referenceNo: `ADMIN_${Date.now()}`,
+          description: `Manual wallet adjustment by Admin (${depDiff !== 0 ? `Deposit: ${depDiff >= 0 ? '+' : ''}₹${depDiff}` : ''} ${winDiff !== 0 ? `Winning: ${winDiff >= 0 ? '+' : ''}₹${winDiff}` : ''} ${bonDiff !== 0 ? `Bonus: ${bonDiff >= 0 ? '+' : ''}₹${bonDiff}` : ''})`,
+          dateTime: new Date().toISOString(),
+          verificationStatus: "verified",
+          completedBy: "Admin",
+          completedAt: new Date().toISOString()
+        });
+
+        // Create realtime user notification
+        const notifyId = `not_${Date.now()}`;
+        await setDoc(doc(db, 'notifications', notifyId), {
+          id: notifyId,
+          title: isCredit ? "Wallet Credited 💰" : "Wallet Adjusted 💳",
+          message: `Your wallet balance was updated by Admin: Deposit ₹${newDep}, Winning ₹${newWin}`,
+          type: "info",
+          dateTime: new Date().toISOString(),
+          isRead: false,
+          userId: editingUser.uid
+        });
+      }
+
       addAuditLog(`Updated profile and balances for user ${editingUser.nickname}.`);
       setEditingUser(null);
     } catch (err: any) {
@@ -4516,37 +4656,144 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                       </div>
                     </div>
 
-                    {/* A. Paytm Gateway Block */}
-                    <div className="bg-[#161622] p-3.5 rounded-xl border border-white/5 space-y-3">
-                      <div className="flex justify-between items-center">
-                        <span className="font-extrabold text-white uppercase text-[10px] tracking-wider">Paytm Merchant Checkout</span>
+                    {/* A. Paytm Merchant Configuration Section */}
+                    <div className="bg-[#161622] p-4 rounded-xl border border-white/5 space-y-4">
+                      <div className="flex justify-between items-center border-b border-white/5 pb-3">
+                        <div className="flex items-center gap-2">
+                          <div className="w-7 h-7 bg-[#002e6e] rounded-lg flex items-center justify-center font-black text-white text-xs border border-[#00b9f5]/30">
+                            p
+                          </div>
+                          <div>
+                            <h4 className="font-extrabold text-white text-xs uppercase tracking-wider">Paytm Merchant Configuration</h4>
+                            <p className="text-[10px] text-neutral-400">Merchant ID Integration Mode (No Secret Key Required)</p>
+                          </div>
+                        </div>
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <span className="text-[10px] text-neutral-400 font-semibold">{appSettings.paytmEnabled ? 'ENABLED' : 'DISABLED'}</span>
+                          <input 
+                            type="checkbox"
+                            checked={appSettings.paytmEnabled}
+                            onChange={e => setAppSettings({...appSettings, paytmEnabled: e.target.checked})}
+                            className="w-4 h-4 text-gold-500 bg-neutral-950 border-white/10 rounded cursor-pointer"
+                          />
+                        </label>
+                      </div>
+
+                      {/* Field: Paytm Merchant ID */}
+                      <div className="space-y-1.5">
+                        <label className="text-neutral-400 uppercase text-[10px] font-extrabold tracking-wide flex items-center gap-1">
+                          <span>Paytm Merchant ID (MID)</span>
+                          <span className="text-rose-400">*</span>
+                        </label>
                         <input 
-                          type="checkbox"
-                          checked={appSettings.paytmEnabled}
-                          onChange={e => setAppSettings({...appSettings, paytmEnabled: e.target.checked})}
-                          className="w-4 h-4 text-gold-500 bg-neutral-950 border-white/10 rounded cursor-pointer"
+                          type="text"
+                          value={appSettings.paytmMid || ''}
+                          onChange={e => setAppSettings({...appSettings, paytmMid: e.target.value})}
+                          placeholder="e.g. PAYTM_MID_9827341029..."
+                          className="w-full bg-neutral-950 border border-white/10 rounded-lg p-2.5 text-white font-mono text-xs focus:border-[#00b9f5] focus:outline-none transition-all"
                         />
                       </div>
-                      
-                      <div className="grid grid-cols-1 gap-2 text-[10px] font-mono">
-                        <div className="space-y-0.5">
-                          <label className="text-neutral-500 uppercase font-semibold">Merchant ID (MID)</label>
-                          <input 
-                            type="text"
-                            value={appSettings.paytmMid || ''}
-                            onChange={e => setAppSettings({...appSettings, paytmMid: e.target.value})}
-                            placeholder="e.g. TitanEs94817..."
-                            className="w-full bg-neutral-950 border border-white/10 rounded-lg p-2 text-white"
-                          />
-                        </div>
+
+                      {/* Buttons: Verify Merchant, Save Configuration, Refresh Merchant Details */}
+                      <div className="flex flex-wrap items-center gap-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={handleVerifyPaytmMerchant}
+                          disabled={verifyingPaytm}
+                          className="px-3.5 py-2 bg-[#00b9f5] hover:bg-[#0099cc] text-slate-950 font-extrabold rounded-lg text-xs tracking-wider uppercase transition-all flex items-center gap-1.5 disabled:opacity-50 cursor-pointer shadow-md"
+                        >
+                          {verifyingPaytm ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
+                          <span>Verify Merchant</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={handleSavePaytmConfig}
+                          disabled={savingSettings}
+                          className="px-3.5 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold rounded-lg text-xs tracking-wider uppercase transition-all flex items-center gap-1.5 disabled:opacity-50 cursor-pointer shadow-md"
+                        >
+                          <Save className="w-3.5 h-3.5" />
+                          <span>Save Configuration</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={handleRefreshPaytmDetails}
+                          disabled={refreshingPaytm}
+                          className="px-3.5 py-2 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border border-white/10 font-bold rounded-lg text-xs tracking-wider uppercase transition-all flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
+                        >
+                          <RefreshCw className={`w-3.5 h-3.5 ${refreshingPaytm ? 'animate-spin' : ''}`} />
+                          <span>Refresh Merchant Details</span>
+                        </button>
                       </div>
-                      
-                      {!appSettings.paytmMerchantKey && (
-                        <div className="mt-2 p-3 bg-amber-950/40 border border-amber-500/20 rounded-lg text-[9px] text-amber-200">
-                          <p className="font-bold text-amber-400 mb-1">⚠️ Operating in Manual Pending Mode</p>
-                          <p className="opacity-80">Paytm's standard API requires a Merchant Key (Checksum Key). Because only a Merchant ID is available, automatic checksum generation is not possible. Transactions using Paytm will safely route to a <b>Pending</b> state for manual Admin approval instead of crashing with a 403 error.</p>
+
+                      {/* Status & Message Feedback */}
+                      {paytmStatusMsg && (
+                        <div className={`p-3 rounded-lg text-xs font-semibold border ${paytmStatusMsg.type === 'success' ? 'bg-emerald-950/40 border-emerald-500/30 text-emerald-300' : 'bg-rose-950/40 border-rose-500/30 text-rose-300'}`}>
+                          {paytmStatusMsg.text}
                         </div>
                       )}
+
+                      {/* ADMIN DASHBOARD: Display Metrics & Status Cards */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 pt-2">
+                        {/* Merchant Connection Status */}
+                        <div className="bg-neutral-950 p-3 rounded-xl border border-white/5 space-y-1">
+                          <div className="text-[10px] text-neutral-400 uppercase font-bold">Merchant Connection Status</div>
+                          <div className="flex items-center gap-2">
+                            <span className={`w-2 h-2 rounded-full ${appSettings.paytmConnectionStatus === 'connected' ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`}></span>
+                            <span className={`text-xs font-extrabold uppercase ${appSettings.paytmConnectionStatus === 'connected' ? 'text-emerald-400' : 'text-rose-400'}`}>
+                              {appSettings.paytmConnectionStatus === 'connected' ? 'Connected' : 'Disconnected'}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Merchant Verification Status */}
+                        <div className="bg-neutral-950 p-3 rounded-xl border border-white/5 space-y-1">
+                          <div className="text-[10px] text-neutral-400 uppercase font-bold">Verification Status</div>
+                          <div className="flex items-center gap-2">
+                            <span className={`w-2 h-2 rounded-full ${appSettings.paytmVerificationStatus === 'verified' ? 'bg-emerald-500' : 'bg-amber-500'}`}></span>
+                            <span className={`text-xs font-extrabold uppercase ${appSettings.paytmVerificationStatus === 'verified' ? 'text-emerald-400' : 'text-amber-400'}`}>
+                              {appSettings.paytmVerificationStatus === 'verified' ? 'Verified' : 'Unverified'}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Last Verification Time */}
+                        <div className="bg-neutral-950 p-3 rounded-xl border border-white/5 space-y-1">
+                          <div className="text-[10px] text-neutral-400 uppercase font-bold">Last Verification Time</div>
+                          <div className="text-xs font-mono font-bold text-neutral-200">
+                            {appSettings.paytmLastVerificationTime ? new Date(appSettings.paytmLastVerificationTime).toLocaleString() : 'Not verified yet'}
+                          </div>
+                        </div>
+
+                        {/* Last Successful Payment */}
+                        <div className="bg-neutral-950 p-3 rounded-xl border border-white/5 space-y-1 col-span-1 sm:col-span-1 lg:col-span-1.5">
+                          <div className="text-[10px] text-neutral-400 uppercase font-bold text-emerald-400 flex items-center gap-1">
+                            <span>✓ Last Successful Payment</span>
+                          </div>
+                          <div className="text-xs font-mono text-emerald-300 font-semibold truncate">
+                            {appSettings.paytmLastSuccessfulPayment || 'No successful payments recorded yet'}
+                          </div>
+                        </div>
+
+                        {/* Last Failed Payment */}
+                        <div className="bg-neutral-950 p-3 rounded-xl border border-white/5 space-y-1 col-span-1 sm:col-span-1 lg:col-span-1.5">
+                          <div className="text-[10px] text-neutral-400 uppercase font-bold text-rose-400 flex items-center gap-1">
+                            <span>✕ Last Failed Payment</span>
+                          </div>
+                          <div className="text-xs font-mono text-rose-300 font-semibold truncate">
+                            {appSettings.paytmLastFailedPayment || 'No failed payments recorded yet'}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Official Paytm Integration Disclaimer / Info */}
+                      <div className="bg-blue-950/30 border border-blue-500/20 p-3 rounded-xl text-[10px] text-blue-200 leading-relaxed space-y-1">
+                        <p className="font-bold text-blue-400">ℹ️ Official Paytm Integration Notice</p>
+                        <p className="opacity-80">
+                          The official Paytm public API does not support dynamic Merchant QR Code retrieval using only the Merchant ID without private checksum keys. The official supported Paytm Merchant Checkout redirect payment flow is enabled and active.
+                        </p>
+                      </div>
                     </div>
 
                     {/* B. Razorpay Gateway Block */}

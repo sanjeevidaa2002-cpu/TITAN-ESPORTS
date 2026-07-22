@@ -72,7 +72,7 @@ export const WalletTab: React.FC = () => {
           // Set initial deposit method to default gateway
           if (data.defaultGateway === 'zapupi' && data.zapupiEnabled !== false) {
             setDepositMethod('ZapUPI');
-          } else if (data.defaultGateway === 'paytm' && data.paytmEnabled && !!data.paytmMerchantKey) {
+          } else if (data.defaultGateway === 'paytm' && data.paytmEnabled && !!data.paytmMid) {
             setDepositMethod('Paytm');
           } else if (data.defaultGateway === 'phonepe' && data.phonepeEnabled) {
             setDepositMethod('PhonePe');
@@ -98,6 +98,26 @@ export const WalletTab: React.FC = () => {
   const [withdrawAmount, setWithdrawAmount] = useState<number>(50);
   const [userUpiId, setUserUpiId] = useState(userProfile?.upiId || '');
 
+  // Check payment result from URL redirection
+  React.useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const paymentStatus = params.get('payment_status');
+    const orderId = params.get('orderId');
+    const amount = params.get('amount');
+    if (paymentStatus && orderId) {
+      if (paymentStatus === 'success') {
+        alert(`🎉 Payment Successful! ${amount ? `₹${amount}` : 'Amount'} has been added to your wallet.`);
+      } else if (paymentStatus === 'cancelled') {
+        alert('ℹ️ Payment was cancelled.');
+      } else if (paymentStatus === 'failed') {
+        alert('❌ Payment failed or declined.');
+      }
+      refreshTransactions();
+      const newUrl = window.location.pathname;
+      window.history.replaceState({}, document.title, newUrl);
+    }
+  }, [refreshTransactions]);
+
   // Keep UPI synced with profile
   React.useEffect(() => {
     if (userProfile?.upiId) {
@@ -115,8 +135,8 @@ export const WalletTab: React.FC = () => {
       
       intervalId = setInterval(async () => {
         try {
-          // Check 60-second timeout
-          if (Date.now() - pollingStartTimeRef.current > 60000) {
+          // Check 120-second timeout for completing ZapUPI payment
+          if (Date.now() - pollingStartTimeRef.current > 120000) {
             clearInterval(intervalId);
             setCheckingStatusOrderId(null);
             setShowDepositModal(false);
@@ -124,21 +144,7 @@ export const WalletTab: React.FC = () => {
             // Mark as failed in backend
             fetch(`/api/payments/status/${checkingStatusOrderId}/cancel`, { method: 'POST' });
             
-            alert('Payment timeout. No amount has been added to your wallet.');
-            refreshTransactions();
-            return;
-          }
-          
-          // Check if window is closed by user
-          if (paymentWindowRef.current && paymentWindowRef.current.closed) {
-            clearInterval(intervalId);
-            setCheckingStatusOrderId(null);
-            setShowDepositModal(false);
-            
-            // Mark as failed in backend
-            fetch(`/api/payments/status/${checkingStatusOrderId}/cancel`, { method: 'POST' });
-            
-            alert('Payment was cancelled. No amount has been added to your wallet.');
+            alert('Payment window timed out. If your payment was completed, your wallet balance will update automatically once verified.');
             refreshTransactions();
             return;
           }
@@ -149,17 +155,19 @@ export const WalletTab: React.FC = () => {
             clearInterval(intervalId);
             setCheckingStatusOrderId(null);
             setShowDepositModal(false);
-            if (data.status === 'completed' || data.status === 'pending_verification') {
-              alert('Payment is ' + (data.status === 'pending_verification' ? 'Pending Approval' : 'Successful') + '! It will be reflected in your wallet once verified.');
+            if (data.status === 'completed' || data.status === 'success') {
+              alert(`🎉 Payment Successful! ₹${data.amount || ''} has been added to your deposit balance.`);
+            } else if (data.status === 'cancelled') {
+              alert('ℹ️ Payment was cancelled. No amount was charged.');
             } else {
-              alert('Payment Failed or Cancelled.');
+              alert('❌ Payment Failed or Declined.');
             }
             refreshTransactions();
           }
         } catch (e) {
-          console.warn("Polling error:");
+          console.warn("Polling error:", e);
         }
-      }, 3000);
+      }, 2500);
     }
     return () => {
       if (intervalId) clearInterval(intervalId);
@@ -647,7 +655,7 @@ export const WalletTab: React.FC = () => {
                           <span className="text-[8px] bg-neutral-800 text-neutral-400 px-1.5 py-0.5 rounded-full font-sans uppercase font-bold self-start">Manual</span>
                         </button>
                       )}
-                      {payConfig.paytmEnabled && !!payConfig.paytmMerchantKey && (
+                      {payConfig.paytmEnabled && !!payConfig.paytmMid && (
                         <button 
                           type="button"
                           onClick={() => setDepositMethod('Paytm')}
