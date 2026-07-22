@@ -852,7 +852,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
   const handleSavePaytmConfig = async () => {
     try {
       setPaytmStatusMsg(null);
-      await savePaymentConfig();
+      await handleSavePaymentSettings();
       setPaytmStatusMsg({ text: "✓ Paytm Merchant configuration saved successfully!", type: 'success' });
     } catch (err: any) {
       setPaytmStatusMsg({ text: `✕ Error saving configuration: ${err.message}`, type: 'error' });
