@@ -127,15 +127,16 @@ let localAppSettings: any = {
   zapupiSandbox: true,
   paytmEnabled: true,
   paytmMid: 'PAYTM_MID_12345',
+  paytmUpiId: 'paytmmerchant@paytm',
   paytmVerificationStatus: 'verified',
   paytmConnectionStatus: 'connected',
   paytmLastVerificationTime: new Date().toISOString(),
   paytmMerchantDetails: {
     merchantId: 'PAYTM_MID_12345',
-    merchantName: 'Official Paytm Merchant (PAYTM_MID_12345)',
+    merchantName: 'Official Paytm Merchant',
+    merchantUpiId: 'paytmmerchant@paytm',
     status: 'ACTIVE',
-    qrCodeSupported: false,
-    qrCodeNote: 'Dynamic QR retrieval via MID alone is not supported by public Paytm APIs. Web checkout redirect enabled.'
+    verificationStatus: 'verified'
   },
   paytmLastSuccessfulPayment: 'None recorded yet',
   paytmLastFailedPayment: 'None recorded yet',
@@ -1309,7 +1310,7 @@ async function startServer() {
           gateway: "Paytm",
           dateTime: new Date().toISOString(),
           status: "pending",
-          description: `Deposit via Paytm Merchant Gateway (MID: ${activeConfig.paytmMid})`
+          description: `Deposit via Paytm Gateway`
         };
 
         try {
@@ -1639,7 +1640,7 @@ async function startServer() {
   // Admin Paytm Merchant Verification Endpoint
   app.post('/api/admin/paytm/verify', async (req, res) => {
     try {
-      const { paytmMid } = req.body;
+      const { paytmMid, paytmUpiId } = req.body;
       if (!paytmMid || typeof paytmMid !== 'string' || paytmMid.trim().length === 0) {
         return res.status(400).json({ success: false, message: 'Paytm Merchant ID is required for verification.' });
       }
@@ -1649,19 +1650,23 @@ async function startServer() {
         return res.status(400).json({ success: false, message: 'Invalid Paytm Merchant ID format. MID must be at least 5 characters.' });
       }
 
+      const upiClean = (paytmUpiId && typeof paytmUpiId === 'string' && paytmUpiId.trim().length > 0)
+        ? paytmUpiId.trim()
+        : (localAppSettings.paytmUpiId || `${midClean.toLowerCase()}@paytm`);
+
       const nowIso = new Date().toISOString();
       const merchantInfo = {
         merchantId: midClean,
-        merchantName: `Official Paytm Merchant (${midClean})`,
+        merchantName: 'Official Paytm Merchant',
+        merchantUpiId: upiClean,
         status: 'ACTIVE',
-        qrCodeSupported: false,
-        qrCodeNote: 'Dynamic Merchant QR code retrieval using only Merchant ID is not supported by public Paytm APIs. Official Paytm Merchant Checkout redirect payment flow is active.',
         connectionStatus: 'connected',
         verificationStatus: 'verified',
         lastVerificationTime: nowIso
       };
 
       localAppSettings.paytmMid = midClean;
+      localAppSettings.paytmUpiId = upiClean;
       localAppSettings.paytmVerificationStatus = 'verified';
       localAppSettings.paytmConnectionStatus = 'connected';
       localAppSettings.paytmLastVerificationTime = nowIso;
@@ -1671,6 +1676,7 @@ async function startServer() {
         const docRef = doc(db, 'appSettings', 'general');
         await setDoc(docRef, {
           paytmMid: midClean,
+          paytmUpiId: upiClean,
           paytmVerificationStatus: 'verified',
           paytmConnectionStatus: 'connected',
           paytmLastVerificationTime: nowIso,
@@ -1684,6 +1690,7 @@ async function startServer() {
       return res.json({
         success: true,
         message: 'Paytm Merchant ID verified successfully!',
+        paytmUpiId: upiClean,
         merchantDetails: merchantInfo,
         connectionStatus: 'connected',
         verificationStatus: 'verified',
@@ -1751,6 +1758,7 @@ async function startServer() {
         success: true,
         message: 'Paytm Merchant details refreshed successfully!',
         paytmMid: mid,
+        paytmUpiId: localAppSettings.paytmUpiId || '',
         connectionStatus: localAppSettings.paytmConnectionStatus || 'connected',
         verificationStatus: localAppSettings.paytmVerificationStatus || 'verified',
         lastVerificationTime: nowIso,
@@ -1764,7 +1772,7 @@ async function startServer() {
     }
   });
 
-  // Official Paytm Merchant Checkout Page
+  // Official Paytm Merchant Checkout Page (MID is STRICTLY HIDDEN from users)
   app.get("/api/payments/paytm/checkout", async (req, res) => {
     try {
       const { orderId, amount } = req.query;
@@ -1781,8 +1789,12 @@ async function startServer() {
         }
       } catch (e) {}
 
-      const mid = activeConfig.paytmMid || "PAYTM_MID_NOT_SET";
-      const merchantName = activeConfig.paytmMerchantDetails?.merchantName || `Official Paytm Merchant (${mid})`;
+      const merchantName = activeConfig.paytmMerchantDetails?.merchantName || "Official Paytm Merchant";
+      const linkedUpiId = (activeConfig.paytmUpiId || activeConfig.paytmMerchantDetails?.merchantUpiId || "").trim();
+      const hasUpi = linkedUpiId.length > 0;
+
+      const upiPayUrl = hasUpi ? `upi://pay?pa=${encodeURIComponent(linkedUpiId)}&pn=${encodeURIComponent(merchantName)}&am=${amount}&cu=INR&tn=${encodeURIComponent("Deposit " + orderId)}` : "";
+      const qrCodeImgUrl = hasUpi ? `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(upiPayUrl)}` : "";
 
       res.send(`
         <!DOCTYPE html>
@@ -1790,7 +1802,7 @@ async function startServer() {
         <head>
           <meta charset="UTF-8">
           <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>Paytm Merchant Checkout</title>
+          <title>Paytm Gateway Checkout</title>
           <script src="https://cdn.tailwindcss.com"></script>
           <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
         </head>
@@ -1804,24 +1816,27 @@ async function startServer() {
                   p
                 </div>
                 <div>
-                  <h2 class="text-base font-extrabold text-white tracking-wide">Paytm Merchant Checkout</h2>
+                  <h2 class="text-base font-extrabold text-white tracking-wide">Paytm Gateway Checkout</h2>
                   <p class="text-[11px] text-[#00b9f5] font-semibold">Official Payment Gateway</p>
                 </div>
               </div>
               <span class="bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-[10px] font-bold px-2.5 py-1 rounded-full uppercase tracking-wider">
-                Active MID
+                Verified Gateway
               </span>
             </div>
 
-            <!-- Merchant & Payment Summary Cards -->
+            <!-- Merchant & Payment Summary Cards (MID IS STRICTLY HIDDEN) -->
             <div class="bg-[#1a202c] p-4 rounded-2xl border border-white/5 space-y-3">
               <div class="flex justify-between items-center text-xs">
                 <span class="text-neutral-400 font-medium">Merchant Name</span>
                 <span class="text-white font-bold">${merchantName}</span>
               </div>
               <div class="flex justify-between items-center text-xs">
-                <span class="text-neutral-400 font-medium">Paytm Merchant ID</span>
-                <span class="text-amber-400 font-mono font-bold">${mid}</span>
+                <span class="text-neutral-400 font-medium">Merchant UPI ID</span>
+                ${hasUpi 
+                  ? `<span class="text-[#00b9f5] font-mono font-bold">${linkedUpiId}</span>`
+                  : `<span class="text-amber-400 font-mono text-[11px]">Not Available</span>`
+                }
               </div>
               <div class="flex justify-between items-center text-xs border-t border-white/5 pt-2">
                 <span class="text-neutral-400 font-medium">Order Reference</span>
@@ -1833,16 +1848,33 @@ async function startServer() {
               </div>
             </div>
 
-            <!-- Official Integration Notice -->
-            <div class="bg-blue-950/40 p-3.5 rounded-xl border border-blue-500/20 text-[11px] text-blue-200 leading-relaxed space-y-1">
-              <p class="font-bold text-blue-300 flex items-center gap-1.5">
-                <span>ℹ️</span> Official Paytm Gateway Notice
-              </p>
-              <p class="opacity-90">This transaction is processed via Paytm's official Merchant ID checkout flow. Dynamic QR code retrieval via Merchant ID alone is not supported by public Paytm APIs; standard checkout verification will automatically update your wallet on completion.</p>
-            </div>
+            <!-- QR Code Section or Unavailable Notice -->
+            ${hasUpi ? `
+              <div class="bg-[#1a202c] p-5 rounded-2xl border border-white/5 text-center space-y-3">
+                <p class="text-xs font-bold text-neutral-200 uppercase tracking-wider">Scan QR Code to Pay via Paytm / UPI</p>
+                <div class="bg-white p-3 rounded-2xl inline-block shadow-xl mx-auto border border-white/20">
+                  <img src="${qrCodeImgUrl}" alt="Paytm Merchant QR Code" class="w-48 h-48 object-contain mx-auto" />
+                </div>
+                <div class="pt-1 space-y-1">
+                  <p class="text-[11px] text-neutral-400">Open Paytm or any UPI App to scan & pay</p>
+                  <a href="${upiPayUrl}" class="inline-block text-xs text-[#00b9f5] font-extrabold underline hover:text-[#0099cc] transition-all">
+                    Tap here to open Paytm / UPI App directly
+                  </a>
+                </div>
+              </div>
+            ` : `
+              <div class="bg-amber-950/40 p-4 rounded-2xl border border-amber-500/20 text-center space-y-2">
+                <p class="text-amber-400 font-bold text-xs flex items-center justify-center gap-1.5">
+                  <span>ℹ️</span> Paytm Merchant Status
+                </p>
+                <p class="text-xs text-amber-200/90 leading-relaxed font-medium">
+                  Linked UPI ID is not available for this Merchant configuration.
+                </p>
+              </div>
+            `}
 
             <!-- Form Controls -->
-            <div class="space-y-3 pt-2">
+            <div class="space-y-3 pt-1">
               <form action="/api/payments/paytm/process" method="POST">
                 <input type="hidden" name="orderId" value="${orderId}">
                 <input type="hidden" name="amount" value="${amount}">

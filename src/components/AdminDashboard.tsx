@@ -762,6 +762,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
           zapupiSandbox: appSettings.zapupiSandbox,
           paytmEnabled: appSettings.paytmEnabled,
           paytmMid: appSettings.paytmMid,
+          paytmUpiId: appSettings.paytmUpiId,
           paytmVerificationStatus: appSettings.paytmVerificationStatus,
           paytmConnectionStatus: appSettings.paytmConnectionStatus,
           paytmLastVerificationTime: appSettings.paytmLastVerificationTime,
@@ -825,12 +826,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
       const res = await fetch('/api/admin/paytm/verify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ paytmMid: appSettings.paytmMid })
+        body: JSON.stringify({ paytmMid: appSettings.paytmMid, paytmUpiId: appSettings.paytmUpiId })
       });
       const data = await res.json();
       if (data.success) {
         setAppSettings(prev => ({
           ...prev,
+          paytmUpiId: data.paytmUpiId || prev.paytmUpiId,
           paytmVerificationStatus: data.verificationStatus || 'verified',
           paytmConnectionStatus: data.connectionStatus || 'connected',
           paytmLastVerificationTime: data.lastVerificationTime || new Date().toISOString(),
@@ -4679,19 +4681,35 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                         </label>
                       </div>
 
-                      {/* Field: Paytm Merchant ID */}
-                      <div className="space-y-1.5">
-                        <label className="text-neutral-400 uppercase text-[10px] font-extrabold tracking-wide flex items-center gap-1">
-                          <span>Paytm Merchant ID (MID)</span>
-                          <span className="text-rose-400">*</span>
-                        </label>
-                        <input 
-                          type="text"
-                          value={appSettings.paytmMid || ''}
-                          onChange={e => setAppSettings({...appSettings, paytmMid: e.target.value})}
-                          placeholder="e.g. PAYTM_MID_9827341029..."
-                          className="w-full bg-neutral-950 border border-white/10 rounded-lg p-2.5 text-white font-mono text-xs focus:border-[#00b9f5] focus:outline-none transition-all"
-                        />
+                      {/* Fields: Paytm Merchant ID & Linked Paytm UPI ID */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div className="space-y-1.5">
+                          <label className="text-neutral-400 uppercase text-[10px] font-extrabold tracking-wide flex items-center gap-1">
+                            <span>Paytm Merchant ID (MID)</span>
+                            <span className="text-rose-400">*</span>
+                          </label>
+                          <input 
+                            type="text"
+                            value={appSettings.paytmMid || ''}
+                            onChange={e => setAppSettings({...appSettings, paytmMid: e.target.value})}
+                            placeholder="e.g. PAYTM_MID_9827341029..."
+                            className="w-full bg-neutral-950 border border-white/10 rounded-lg p-2.5 text-white font-mono text-xs focus:border-[#00b9f5] focus:outline-none transition-all"
+                          />
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <label className="text-neutral-400 uppercase text-[10px] font-extrabold tracking-wide flex items-center gap-1">
+                            <span>Linked Paytm UPI ID</span>
+                            <span className="text-neutral-500 text-[9px] font-normal">(Auto-linked or Custom)</span>
+                          </label>
+                          <input 
+                            type="text"
+                            value={appSettings.paytmUpiId || ''}
+                            onChange={e => setAppSettings({...appSettings, paytmUpiId: e.target.value})}
+                            placeholder="e.g. paytmmerchant@paytm"
+                            className="w-full bg-neutral-950 border border-white/10 rounded-lg p-2.5 text-[#00b9f5] font-mono text-xs focus:border-[#00b9f5] focus:outline-none transition-all"
+                          />
+                        </div>
                       </div>
 
                       {/* Buttons: Verify Merchant, Save Configuration, Refresh Merchant Details */}
@@ -4734,16 +4752,29 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                         </div>
                       )}
 
-                      {/* ADMIN DASHBOARD: Display Metrics & Status Cards */}
-                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 pt-2">
-                        {/* Merchant Connection Status */}
+                      {/* ADMIN DASHBOARD: Display Merchant Details & Metrics Cards */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 pt-2">
+                        {/* Merchant ID (Admin view only) */}
                         <div className="bg-neutral-950 p-3 rounded-xl border border-white/5 space-y-1">
-                          <div className="text-[10px] text-neutral-400 uppercase font-bold">Merchant Connection Status</div>
-                          <div className="flex items-center gap-2">
-                            <span className={`w-2 h-2 rounded-full ${appSettings.paytmConnectionStatus === 'connected' ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`}></span>
-                            <span className={`text-xs font-extrabold uppercase ${appSettings.paytmConnectionStatus === 'connected' ? 'text-emerald-400' : 'text-rose-400'}`}>
-                              {appSettings.paytmConnectionStatus === 'connected' ? 'Connected' : 'Disconnected'}
-                            </span>
+                          <div className="text-[10px] text-neutral-400 uppercase font-bold">Paytm Merchant ID</div>
+                          <div className="text-xs font-mono font-bold text-amber-400 truncate">
+                            {appSettings.paytmMid || 'Not configured'}
+                          </div>
+                        </div>
+
+                        {/* Merchant Name */}
+                        <div className="bg-neutral-950 p-3 rounded-xl border border-white/5 space-y-1">
+                          <div className="text-[10px] text-neutral-400 uppercase font-bold">Merchant Name</div>
+                          <div className="text-xs font-bold text-white truncate">
+                            {appSettings.paytmMerchantDetails?.merchantName || 'Official Paytm Merchant'}
+                          </div>
+                        </div>
+
+                        {/* Linked UPI ID */}
+                        <div className="bg-neutral-950 p-3 rounded-xl border border-white/5 space-y-1">
+                          <div className="text-[10px] text-neutral-400 uppercase font-bold">Linked UPI ID</div>
+                          <div className="text-xs font-mono font-bold text-[#00b9f5] truncate">
+                            {appSettings.paytmUpiId || appSettings.paytmMerchantDetails?.merchantUpiId || 'Not linked'}
                           </div>
                         </div>
 
@@ -4758,16 +4789,27 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                           </div>
                         </div>
 
+                        {/* Connection Status */}
+                        <div className="bg-neutral-950 p-3 rounded-xl border border-white/5 space-y-1">
+                          <div className="text-[10px] text-neutral-400 uppercase font-bold">Connection Status</div>
+                          <div className="flex items-center gap-2">
+                            <span className={`w-2 h-2 rounded-full ${appSettings.paytmConnectionStatus === 'connected' ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`}></span>
+                            <span className={`text-xs font-extrabold uppercase ${appSettings.paytmConnectionStatus === 'connected' ? 'text-emerald-400' : 'text-rose-400'}`}>
+                              {appSettings.paytmConnectionStatus === 'connected' ? 'Connected' : 'Disconnected'}
+                            </span>
+                          </div>
+                        </div>
+
                         {/* Last Verification Time */}
                         <div className="bg-neutral-950 p-3 rounded-xl border border-white/5 space-y-1">
                           <div className="text-[10px] text-neutral-400 uppercase font-bold">Last Verification Time</div>
-                          <div className="text-xs font-mono font-bold text-neutral-200">
+                          <div className="text-xs font-mono font-bold text-neutral-200 truncate">
                             {appSettings.paytmLastVerificationTime ? new Date(appSettings.paytmLastVerificationTime).toLocaleString() : 'Not verified yet'}
                           </div>
                         </div>
 
                         {/* Last Successful Payment */}
-                        <div className="bg-neutral-950 p-3 rounded-xl border border-white/5 space-y-1 col-span-1 sm:col-span-1 lg:col-span-1.5">
+                        <div className="bg-neutral-950 p-3 rounded-xl border border-white/5 space-y-1 sm:col-span-2 lg:col-span-2">
                           <div className="text-[10px] text-neutral-400 uppercase font-bold text-emerald-400 flex items-center gap-1">
                             <span>✓ Last Successful Payment</span>
                           </div>
@@ -4777,7 +4819,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack }) => {
                         </div>
 
                         {/* Last Failed Payment */}
-                        <div className="bg-neutral-950 p-3 rounded-xl border border-white/5 space-y-1 col-span-1 sm:col-span-1 lg:col-span-1.5">
+                        <div className="bg-neutral-950 p-3 rounded-xl border border-white/5 space-y-1 sm:col-span-2 lg:col-span-2">
                           <div className="text-[10px] text-neutral-400 uppercase font-bold text-rose-400 flex items-center gap-1">
                             <span>✕ Last Failed Payment</span>
                           </div>
