@@ -862,13 +862,23 @@ async function startServer() {
       if (config) {
         return helperResponseJson(res, 200, {
           success: true,
-          apiKey: config.apiKey,
-          channelId: config.channelId,
-          enabled: config.enabled
+          config: {
+            apiKey: config.apiKey || "",
+            channelId: config.channelId || "",
+            enabled: !!config.enabled
+          },
+          apiKey: config.apiKey || "",
+          channelId: config.channelId || "",
+          enabled: !!config.enabled
         });
       }
       return helperResponseJson(res, 200, {
         success: true,
+        config: {
+          apiKey: "",
+          channelId: "",
+          enabled: false
+        },
         apiKey: "",
         channelId: "",
         enabled: false
@@ -981,6 +991,151 @@ async function startServer() {
     } catch (err: any) {
       console.error("Error connecting YouTube channel:", err);
       return helperResponseJson(res, 500, { success: false, error: err.message || "Failed to connect and sync channel." });
+    }
+  });
+
+  // Import Channel Details Only (Admin Only)
+  app.post("/api/youtube/api-import/channel", async (req, res) => {
+    try {
+      const { userUid } = req.body;
+      if (!userUid) {
+        return helperResponseJson(res, 400, { success: false, error: "Missing admin user session." });
+      }
+      const isAdmin = await verifyAdminRole(userUid);
+      if (!isAdmin) {
+        return helperResponseJson(res, 403, { success: false, error: "Forbidden: Admin privileges required." });
+      }
+
+      const config = await getYouTubeApiConfig();
+      if (!config || !config.apiKey || !config.channelId) {
+        return helperResponseJson(res, 400, { success: false, error: "YouTube API not connected. Please connect first." });
+      }
+
+      const syncResult = await syncAllYouTubeData(config.apiKey, config.channelId);
+      return helperResponseJson(res, 200, {
+        success: true,
+        message: "Channel details updated successfully!",
+        details: syncResult.details
+      });
+    } catch (err: any) {
+      console.error("Error importing channel details:", err);
+      return helperResponseJson(res, 500, { success: false, error: err.message || "Failed to import channel details." });
+    }
+  });
+
+  // Import Regular Videos (Admin Only)
+  app.post("/api/youtube/api-import/import-videos", async (req, res) => {
+    try {
+      const { userUid } = req.body;
+      if (!userUid) {
+        return helperResponseJson(res, 400, { success: false, error: "Missing admin user session." });
+      }
+      const isAdmin = await verifyAdminRole(userUid);
+      if (!isAdmin) {
+        return helperResponseJson(res, 403, { success: false, error: "Forbidden: Admin privileges required." });
+      }
+
+      const config = await getYouTubeApiConfig();
+      if (!config || !config.apiKey || !config.channelId) {
+        return helperResponseJson(res, 400, { success: false, error: "YouTube API not connected. Please connect first." });
+      }
+
+      const syncResult = await syncAllYouTubeData(config.apiKey, config.channelId);
+      return helperResponseJson(res, 200, {
+        success: true,
+        message: `Imported ${syncResult.details?.videosCount || 0} regular videos successfully!`,
+        details: syncResult.details
+      });
+    } catch (err: any) {
+      console.error("Error importing videos:", err);
+      return helperResponseJson(res, 500, { success: false, error: err.message || "Failed to import videos." });
+    }
+  });
+
+  // Import Shorts (Admin Only)
+  app.post("/api/youtube/api-import/import-shorts", async (req, res) => {
+    try {
+      const { userUid } = req.body;
+      if (!userUid) {
+        return helperResponseJson(res, 400, { success: false, error: "Missing admin user session." });
+      }
+      const isAdmin = await verifyAdminRole(userUid);
+      if (!isAdmin) {
+        return helperResponseJson(res, 403, { success: false, error: "Forbidden: Admin privileges required." });
+      }
+
+      const config = await getYouTubeApiConfig();
+      if (!config || !config.apiKey || !config.channelId) {
+        return helperResponseJson(res, 400, { success: false, error: "YouTube API not connected. Please connect first." });
+      }
+
+      const syncResult = await syncAllYouTubeData(config.apiKey, config.channelId);
+      return helperResponseJson(res, 200, {
+        success: true,
+        message: `Imported ${syncResult.details?.shortsCount || 0} shorts successfully!`,
+        details: syncResult.details
+      });
+    } catch (err: any) {
+      console.error("Error importing shorts:", err);
+      return helperResponseJson(res, 500, { success: false, error: err.message || "Failed to import shorts." });
+    }
+  });
+
+  // Import Live Streams (Admin Only)
+  app.post("/api/youtube/api-import/import-live", async (req, res) => {
+    try {
+      const { userUid } = req.body;
+      if (!userUid) {
+        return helperResponseJson(res, 400, { success: false, error: "Missing admin user session." });
+      }
+      const isAdmin = await verifyAdminRole(userUid);
+      if (!isAdmin) {
+        return helperResponseJson(res, 403, { success: false, error: "Forbidden: Admin privileges required." });
+      }
+
+      const config = await getYouTubeApiConfig();
+      if (!config || !config.apiKey || !config.channelId) {
+        return helperResponseJson(res, 400, { success: false, error: "YouTube API not connected. Please connect first." });
+      }
+
+      const syncResult = await syncAllYouTubeData(config.apiKey, config.channelId);
+      return helperResponseJson(res, 200, {
+        success: true,
+        message: `Imported ${syncResult.details?.liveCount || 0} live streams/broadcasts successfully!`,
+        details: syncResult.details
+      });
+    } catch (err: any) {
+      console.error("Error importing live streams:", err);
+      return helperResponseJson(res, 500, { success: false, error: err.message || "Failed to import live streams." });
+    }
+  });
+
+  // Sync Latest / Full Sync (Admin Only)
+  app.post("/api/youtube/api-import/sync-latest", async (req, res) => {
+    try {
+      const { userUid } = req.body;
+      if (!userUid) {
+        return helperResponseJson(res, 400, { success: false, error: "Missing admin user session." });
+      }
+      const isAdmin = await verifyAdminRole(userUid);
+      if (!isAdmin) {
+        return helperResponseJson(res, 403, { success: false, error: "Forbidden: Admin privileges required." });
+      }
+
+      const config = await getYouTubeApiConfig();
+      if (!config || !config.apiKey || !config.channelId) {
+        return helperResponseJson(res, 400, { success: false, error: "YouTube API not connected. Please connect first." });
+      }
+
+      const syncResult = await syncAllYouTubeData(config.apiKey, config.channelId);
+      return helperResponseJson(res, 200, {
+        success: true,
+        message: syncResult.message,
+        details: syncResult.details
+      });
+    } catch (err: any) {
+      console.error("Error in sync-latest:", err);
+      return helperResponseJson(res, 500, { success: false, error: err.message || "Synchronization failed." });
     }
   });
 
